@@ -24,6 +24,7 @@ LIBELF_LIBS  := -l elf
 all: $(OBJTOOL)
 
 INCLUDES := -I$(srctree)/tools/include \
+	    -I$(srctree)/tools/include/uapi \
 	    -I$(srctree)/tools/arch/$(HOSTARCH)/include/uapi \
 	    -I$(srctree)/tools/arch/$(SRCARCH)/include	\
 	    -I$(srctree)/tools/objtool/include \
