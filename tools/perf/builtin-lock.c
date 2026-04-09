@@ -62,6 +62,8 @@ static const char *output_name = NULL;
 static FILE *lock_output;
 
 static struct lock_filter filters;
+static struct lock_delay *delays;
+static int nr_delays;
 
 static enum lock_aggr_mode aggr_mode = LOCK_AGGR_ADDR;
 
@@ -418,15 +420,12 @@ static void combine_lock_stats(struct lock_stat *st)
 	rb_insert_color(&st->rb, &sorted);
 }
 
-static void insert_to_result(struct lock_stat *st,
-			     int (*bigger)(struct lock_stat *, struct lock_stat *))
+static void insert_to(struct rb_root *rr, struct lock_stat *st,
+		      int (*bigger)(struct lock_stat *, struct lock_stat *))
 {
-	struct rb_node **rb = &result.rb_node;
+	struct rb_node **rb = &rr->rb_node;
 	struct rb_node *parent = NULL;
 	struct lock_stat *p;
-
-	if (combine_locks && st->combined)
-		return;
 
 	while (*rb) {
 		p = container_of(*rb, struct lock_stat, rb);
@@ -439,13 +438,21 @@ static void insert_to_result(struct lock_stat *st,
 	}
 
 	rb_link_node(&st->rb, parent, rb);
-	rb_insert_color(&st->rb, &result);
+	rb_insert_color(&st->rb, rr);
 }
 
-/* returns left most element of result, and erase it */
-static struct lock_stat *pop_from_result(void)
+static inline void insert_to_result(struct lock_stat *st,
+				    int (*bigger)(struct lock_stat *,
+						  struct lock_stat *))
 {
-	struct rb_node *node = result.rb_node;
+	if (combine_locks && st->combined)
+		return;
+	insert_to(&result, st, bigger);
+}
+
+static inline struct lock_stat *pop_from(struct rb_root *rr)
+{
+	struct rb_node *node = rr->rb_node;
 
 	if (!node)
 		return NULL;
@@ -453,8 +460,15 @@ static struct lock_stat *pop_from_result(void)
 	while (node->rb_left)
 		node = node->rb_left;
 
-	rb_erase(node, &result);
+	rb_erase(node, rr);
 	return container_of(node, struct lock_stat, rb);
+
+}
+
+/* returns left most element of result, and erase it */
+static struct lock_stat *pop_from_result(void)
+{
+	return pop_from(&result);
 }
 
 struct trace_lock_handler {
@@ -1805,6 +1819,22 @@ static void print_contention_result(struct lock_contention *con)
 			break;
 	}
 
+	if (con->owner && con->save_callstack && verbose > 0) {
+		struct rb_root root = RB_ROOT;
+
+		if (symbol_conf.field_sep)
+			fprintf(lock_output, "# owner stack trace:\n");
+		else
+			fprintf(lock_output, "\n=== owner stack trace ===\n\n");
+		while ((st = pop_owner_stack_trace(con)))
+			insert_to(&root, st, compare);
+
+		while ((st = pop_from(&root))) {
+			print_lock_stat(con, st);
+			free(st);
+		}
+	}
+
 	if (print_nr_entries) {
 		/* update the total/bad stats */
 		while ((st = pop_from_result())) {
@@ -1837,6 +1867,7 @@ static int __cmd_report(bool display_info)
 	eops.sample		 = process_sample_event;
 	eops.comm		 = perf_event__process_comm;
 	eops.mmap		 = perf_event__process_mmap;
+	eops.mmap2		 = perf_event__process_mmap2;
 	eops.namespaces		 = perf_event__process_namespaces;
 	eops.tracing_data	 = perf_event__process_tracing_data;
 	session = perf_session__new(&data, &eops);
@@ -1846,7 +1877,7 @@ static int __cmd_report(bool display_info)
 	}
 
 	symbol_conf.allow_aliases = true;
-	symbol__init(&session->header.env);
+	symbol__init(perf_session__env(session));
 
 	if (!data.is_pipe) {
 		if (!perf_session__has_traces(session, "lock record"))
@@ -1950,8 +1981,10 @@ static int check_lock_contention_options(const struct option *options,
 		}
 	}
 
-	if (show_lock_owner)
-		show_thread_stats = true;
+	if (show_lock_owner && !show_thread_stats) {
+		pr_warning("Now -o try to show owner's callstack instead of pid and comm.\n");
+		pr_warning("Please use -t option too to keep the old behavior.\n");
+	}
 
 	return 0;
 }
@@ -1971,10 +2004,13 @@ static int __cmd_contention(int argc, const char **argv)
 		.max_stack = max_stack_depth,
 		.stack_skip = stack_skip,
 		.filters = &filters,
+		.delays = delays,
+		.nr_delays = nr_delays,
 		.save_callstack = needs_callstack(),
 		.owner = show_lock_owner,
 		.cgroups = RB_ROOT,
 	};
+	struct perf_env host_env;
 
 	lockhash_table = calloc(LOCKHASH_SIZE, sizeof(*lockhash_table));
 	if (!lockhash_table)
@@ -1988,9 +2024,13 @@ static int __cmd_contention(int argc, const char **argv)
 	eops.sample		 = process_sample_event;
 	eops.comm		 = perf_event__process_comm;
 	eops.mmap		 = perf_event__process_mmap;
+	eops.mmap2		 = perf_event__process_mmap2;
 	eops.tracing_data	 = perf_event__process_tracing_data;
 
-	session = perf_session__new(use_bpf ? NULL : &data, &eops);
+	perf_env__init(&host_env);
+	session = __perf_session__new(use_bpf ? NULL : &data, &eops,
+				/*trace_event_repipe=*/false, &host_env);
+
 	if (IS_ERR(session)) {
 		pr_err("Initializing perf session failed\n");
 		err = PTR_ERR(session);
@@ -2008,7 +2048,7 @@ static int __cmd_contention(int argc, const char **argv)
 		con.save_callstack = true;
 
 	symbol_conf.allow_aliases = true;
-	symbol__init(&session->header.env);
+	symbol__init(perf_session__env(session));
 
 	if (use_bpf) {
 		err = target__validate(&target);
@@ -2108,6 +2148,7 @@ out_delete:
 	evlist__delete(con.evlist);
 	lock_contention_finish(&con);
 	perf_session__delete(session);
+	perf_env__exit(&host_env);
 	zfree(&lockhash_table);
 	return err;
 }
@@ -2474,6 +2515,79 @@ static int parse_cgroup_filter(const struct option *opt __maybe_unused, const ch
 	return ret;
 }
 
+static bool add_lock_delay(char *spec)
+{
+	char *at, *pos;
+	struct lock_delay *tmp;
+	unsigned long duration;
+
+	at = strchr(spec, '@');
+	if (at == NULL) {
+		pr_err("lock delay should have '@' sign: %s\n", spec);
+		return false;
+	}
+	if (at == spec) {
+		pr_err("lock delay should have time before '@': %s\n", spec);
+		return false;
+	}
+
+	*at = '\0';
+	duration = strtoul(spec, &pos, 0);
+	if (!strcmp(pos, "ns"))
+		duration *= 1;
+	else if (!strcmp(pos, "us"))
+		duration *= 1000;
+	else if (!strcmp(pos, "ms"))
+		duration *= 1000 * 1000;
+	else if (*pos) {
+		pr_err("invalid delay time: %s@%s\n", spec, at + 1);
+		return false;
+	}
+
+	if (duration > 10 * 1000 * 1000) {
+		pr_err("lock delay is too long: %s (> 10ms)\n", spec);
+		return false;
+	}
+
+	tmp = realloc(delays, (nr_delays + 1) * sizeof(*delays));
+	if (tmp == NULL) {
+		pr_err("Memory allocation failure\n");
+		return false;
+	}
+	delays = tmp;
+
+	delays[nr_delays].sym = strdup(at + 1);
+	if (delays[nr_delays].sym == NULL) {
+		pr_err("Memory allocation failure\n");
+		return false;
+	}
+	delays[nr_delays].time = duration;
+
+	nr_delays++;
+	return true;
+}
+
+static int parse_lock_delay(const struct option *opt __maybe_unused, const char *str,
+			    int unset __maybe_unused)
+{
+	char *s, *tmp, *tok;
+	int ret = 0;
+
+	s = strdup(str);
+	if (s == NULL)
+		return -1;
+
+	for (tok = strtok_r(s, ", ", &tmp); tok; tok = strtok_r(NULL, ", ", &tmp)) {
+		if (!add_lock_delay(tok)) {
+			ret = -1;
+			break;
+		}
+	}
+
+	free(s);
+	return ret;
+}
+
 int cmd_lock(int argc, const char **argv)
 {
 	const struct option lock_options[] = {
@@ -2550,6 +2664,8 @@ int cmd_lock(int argc, const char **argv)
 	OPT_BOOLEAN(0, "lock-cgroup", &show_lock_cgroups, "show lock stats by cgroup"),
 	OPT_CALLBACK('G', "cgroup-filter", NULL, "CGROUPS",
 		     "Filter specific cgroups", parse_cgroup_filter),
+	OPT_CALLBACK('J', "inject-delay", NULL, "TIME@FUNC",
+		     "Inject delays to specific locks", parse_lock_delay),
 	OPT_PARENT(lock_options)
 	};
 

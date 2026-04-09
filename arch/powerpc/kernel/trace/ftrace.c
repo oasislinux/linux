@@ -115,10 +115,8 @@ static unsigned long ftrace_lookup_module_stub(unsigned long ip, unsigned long a
 {
 	struct module *mod = NULL;
 
-	preempt_disable();
-	mod = __module_text_address(ip);
-	preempt_enable();
-
+	scoped_guard(rcu)
+		mod = __module_text_address(ip);
 	if (!mod)
 		pr_err("No module loaded at addr=%lx\n", ip);
 
@@ -490,8 +488,10 @@ int ftrace_init_nop(struct module *mod, struct dyn_ftrace *rec)
 		return ret;
 
 	/* Set up out-of-line stub */
-	if (IS_ENABLED(CONFIG_PPC_FTRACE_OUT_OF_LINE))
-		return ftrace_init_ool_stub(mod, rec);
+	if (IS_ENABLED(CONFIG_PPC_FTRACE_OUT_OF_LINE)) {
+		ret = ftrace_init_ool_stub(mod, rec);
+		goto out;
+	}
 
 	/* Nop-out the ftrace location */
 	new = ppc_inst(PPC_RAW_NOP());
@@ -521,6 +521,10 @@ int ftrace_init_nop(struct module *mod, struct dyn_ftrace *rec)
 	} else {
 		return -EINVAL;
 	}
+
+out:
+	if (!ret)
+		ret = ftrace_rec_set_nop_ops(rec);
 
 	return ret;
 }

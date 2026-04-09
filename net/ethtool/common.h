@@ -15,12 +15,6 @@
 #define __SOF_TIMESTAMPING_CNT (const_ilog2(SOF_TIMESTAMPING_LAST) + 1)
 #define __HWTSTAMP_FLAG_CNT (const_ilog2(HWTSTAMP_FLAG_LAST) + 1)
 
-struct link_mode_info {
-	int				speed;
-	u8				lanes;
-	u8				duplex;
-};
-
 struct genl_info;
 struct hwtstamp_provider_desc;
 
@@ -33,7 +27,6 @@ tunable_strings[__ETHTOOL_TUNABLE_COUNT][ETH_GSTRING_LEN];
 extern const char
 phy_tunable_strings[__ETHTOOL_PHY_TUNABLE_COUNT][ETH_GSTRING_LEN];
 extern const char link_mode_names[][ETH_GSTRING_LEN];
-extern const struct link_mode_info link_mode_params[];
 extern const char netif_msg_class_names[][ETH_GSTRING_LEN];
 extern const char wol_mode_names[][ETH_GSTRING_LEN];
 extern const char sof_timestamping_names[][ETH_GSTRING_LEN];
@@ -50,12 +43,18 @@ bool convert_legacy_settings_to_link_ksettings(
 int ethtool_check_max_channel(struct net_device *dev,
 			      struct ethtool_channels channels,
 			      struct genl_info *info);
+struct ethtool_rxfh_context *
+ethtool_rxfh_ctx_alloc(const struct ethtool_ops *ops,
+		       u32 indir_size, u32 key_size);
 int ethtool_check_rss_ctx_busy(struct net_device *dev, u32 rss_context);
+int ethtool_rxfh_config_is_sym(u64 rxfh);
 
 void ethtool_ringparam_get_cfg(struct net_device *dev,
 			       struct ethtool_ringparam *param,
 			       struct kernel_ethtool_ringparam *kparam,
 			       struct netlink_ext_ack *extack);
+
+int ethtool_get_rx_ring_count(struct net_device *dev);
 
 int __ethtool_get_ts_info(struct net_device *dev, struct kernel_ethtool_ts_info *info);
 int ethtool_get_ts_info_by_phc(struct net_device *dev,
@@ -80,5 +79,14 @@ int ethtool_get_module_eeprom_call(struct net_device *dev,
 				   struct ethtool_eeprom *ee, u8 *data);
 
 bool __ethtool_dev_mm_supported(struct net_device *dev);
+
+#if IS_ENABLED(CONFIG_ETHTOOL_NETLINK)
+void ethtool_rss_notify(struct net_device *dev, u32 type, u32 rss_context);
+#else
+static inline void
+ethtool_rss_notify(struct net_device *dev, u32 type, u32 rss_context)
+{
+}
+#endif
 
 #endif /* _ETHTOOL_COMMON_H */

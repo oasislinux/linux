@@ -842,7 +842,7 @@ static int bq2415x_notifier_call(struct notifier_block *nb,
 	if (bq->automode < 1)
 		return NOTIFY_OK;
 
-	mod_delayed_work(system_wq, &bq->work, 0);
+	mod_delayed_work(system_percpu_wq, &bq->work, 0);
 
 	return NOTIFY_OK;
 }
@@ -1497,7 +1497,7 @@ static int bq2415x_power_supply_init(struct bq2415x_device *bq)
 	char revstr[8];
 	struct power_supply_config psy_cfg = {
 		.drv_data = bq,
-		.of_node = bq->dev->of_node,
+		.fwnode = dev_fwnode(bq->dev),
 		.attr_grp = bq2415x_sysfs_groups,
 	};
 
@@ -1516,7 +1516,7 @@ static int bq2415x_power_supply_init(struct bq2415x_device *bq)
 
 	ret = bq2415x_detect_revision(bq);
 	if (ret < 0)
-		strcpy(revstr, "unknown");
+		strscpy(revstr, "unknown", sizeof(revstr));
 	else
 		sprintf(revstr, "1.%d", ret);
 
@@ -1674,7 +1674,7 @@ static int bq2415x_probe(struct i2c_client *client)
 	/* Query for initial reported_mode and set it */
 	if (bq->nb.notifier_call) {
 		if (np) {
-			notify_psy = power_supply_get_by_phandle(np,
+			notify_psy = power_supply_get_by_reference(of_fwnode_handle(np),
 						"ti,usb-charger-detection");
 			if (IS_ERR(notify_psy))
 				notify_psy = NULL;

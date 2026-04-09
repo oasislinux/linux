@@ -841,8 +841,8 @@ out:
 	return err;
 }
 
-static int vfat_mkdir(struct mnt_idmap *idmap, struct inode *dir,
-		      struct dentry *dentry, umode_t mode)
+static struct dentry *vfat_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+				  struct dentry *dentry, umode_t mode)
 {
 	struct super_block *sb = dir->i_sb;
 	struct inode *inode;
@@ -877,13 +877,13 @@ static int vfat_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	d_instantiate(dentry, inode);
 
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
-	return 0;
+	return NULL;
 
 out_free:
 	fat_free_clusters(dir, cluster);
 out:
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
-	return err;
+	return ERR_PTR(err);
 }
 
 static int vfat_get_dotdot_de(struct inode *inode, struct buffer_head **bh,
@@ -1187,9 +1187,9 @@ static void setup(struct super_block *sb)
 {
 	MSDOS_SB(sb)->dir_ops = &vfat_dir_inode_operations;
 	if (MSDOS_SB(sb)->options.name_check != 's')
-		sb->s_d_op = &vfat_ci_dentry_ops;
+		set_default_d_op(sb, &vfat_ci_dentry_ops);
 	else
-		sb->s_d_op = &vfat_dentry_ops;
+		set_default_d_op(sb, &vfat_dentry_ops);
 }
 
 static int vfat_fill_super(struct super_block *sb, struct fs_context *fc)

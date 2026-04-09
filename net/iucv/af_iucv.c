@@ -10,8 +10,7 @@
  *		Ursula Braun <ursula.braun@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "af_iucv"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "af_iucv: " fmt
 
 #include <linux/filter.h>
 #include <linux/module.h>
@@ -28,6 +27,7 @@
 #include <linux/poll.h>
 #include <linux/security.h>
 #include <net/sock.h>
+#include <asm/machine.h>
 #include <asm/ebcdic.h>
 #include <asm/cpcmd.h>
 #include <linux/kmod.h>
@@ -552,16 +552,17 @@ static void __iucv_auto_name(struct iucv_sock *iucv)
 {
 	char name[12];
 
-	sprintf(name, "%08x", atomic_inc_return(&iucv_sk_list.autobind_name));
+	scnprintf(name, sizeof(name),
+		  "%08x", atomic_inc_return(&iucv_sk_list.autobind_name));
 	while (__iucv_get_sock_by_name(name)) {
-		sprintf(name, "%08x",
-			atomic_inc_return(&iucv_sk_list.autobind_name));
+		scnprintf(name, sizeof(name), "%08x",
+			  atomic_inc_return(&iucv_sk_list.autobind_name));
 	}
 	memcpy(iucv->src_name, name, 8);
 }
 
 /* Bind an unbound socket */
-static int iucv_sock_bind(struct socket *sock, struct sockaddr *addr,
+static int iucv_sock_bind(struct socket *sock, struct sockaddr_unsized *addr,
 			  int addr_len)
 {
 	DECLARE_SOCKADDR(struct sockaddr_iucv *, sa, addr);
@@ -666,7 +667,7 @@ static int iucv_sock_autobind(struct sock *sk)
 	return err;
 }
 
-static int afiucv_path_connect(struct socket *sock, struct sockaddr *addr)
+static int afiucv_path_connect(struct socket *sock, struct sockaddr_unsized *addr)
 {
 	DECLARE_SOCKADDR(struct sockaddr_iucv *, sa, addr);
 	struct sock *sk = sock->sk;
@@ -712,7 +713,7 @@ done:
 }
 
 /* Connect an unconnected socket */
-static int iucv_sock_connect(struct socket *sock, struct sockaddr *addr,
+static int iucv_sock_connect(struct socket *sock, struct sockaddr_unsized *addr,
 			     int alen, int flags)
 {
 	DECLARE_SOCKADDR(struct sockaddr_iucv *, sa, addr);
@@ -1186,7 +1187,7 @@ static void iucv_process_message(struct sock *sk, struct sk_buff *skb,
 
 	IUCV_SKB_CB(skb)->offset = 0;
 	if (sk_filter(sk, skb)) {
-		atomic_inc(&sk->sk_drops);	/* skb rejected by filter */
+		sk_drops_inc(sk);	/* skb rejected by filter */
 		kfree_skb(skb);
 		return;
 	}
@@ -2010,7 +2011,7 @@ static int afiucv_hs_callback_rx(struct sock *sk, struct sk_buff *skb)
 	skb_reset_network_header(skb);
 	IUCV_SKB_CB(skb)->offset = 0;
 	if (sk_filter(sk, skb)) {
-		atomic_inc(&sk->sk_drops);	/* skb rejected by filter */
+		sk_drops_inc(sk);	/* skb rejected by filter */
 		kfree_skb(skb);
 		return NET_RX_SUCCESS;
 	}
@@ -2272,7 +2273,7 @@ static int __init afiucv_init(void)
 {
 	int err;
 
-	if (MACHINE_IS_VM && IS_ENABLED(CONFIG_IUCV)) {
+	if (machine_is_vm() && IS_ENABLED(CONFIG_IUCV)) {
 		cpcmd("QUERY USERID", iucv_userid, sizeof(iucv_userid), &err);
 		if (unlikely(err)) {
 			WARN_ON(err);

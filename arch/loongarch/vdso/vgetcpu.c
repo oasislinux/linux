@@ -10,18 +10,21 @@ static __always_inline int read_cpu_id(void)
 {
 	int cpu_id;
 
+#ifdef CONFIG_64BIT
 	__asm__ __volatile__(
 	"	rdtime.d $zero, %0\n"
 	: "=r" (cpu_id)
 	:
 	: "memory");
+#else
+	__asm__ __volatile__(
+	"	rdtimel.w $zero, %0\n"
+	: "=r" (cpu_id)
+	:
+	: "memory");
+#endif
 
 	return cpu_id;
-}
-
-static __always_inline const struct vdso_pcpu_data *get_pcpu_data(void)
-{
-	return _loongarch_data.pdata;
 }
 
 extern
@@ -29,17 +32,14 @@ int __vdso_getcpu(unsigned int *cpu, unsigned int *node, struct getcpu_cache *un
 int __vdso_getcpu(unsigned int *cpu, unsigned int *node, struct getcpu_cache *unused)
 {
 	int cpu_id;
-	const struct vdso_pcpu_data *data;
 
 	cpu_id = read_cpu_id();
 
 	if (cpu)
 		*cpu = cpu_id;
 
-	if (node) {
-		data = get_pcpu_data();
-		*node = data[cpu_id].node;
-	}
+	if (node)
+		*node = vdso_u_arch_data.pdata[cpu_id].node;
 
 	return 0;
 }

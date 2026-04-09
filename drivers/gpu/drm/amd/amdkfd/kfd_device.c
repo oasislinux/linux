@@ -101,6 +101,7 @@ static void kfd_device_info_set_sdma_info(struct kfd_dev *kfd)
 	case IP_VERSION(6, 1, 0):
 	case IP_VERSION(6, 1, 1):
 	case IP_VERSION(6, 1, 2):
+	case IP_VERSION(6, 1, 3):
 	case IP_VERSION(7, 0, 0):
 	case IP_VERSION(7, 0, 1):
 		kfd->device_info.num_sdma_queues_per_engine = 8;
@@ -122,6 +123,7 @@ static void kfd_device_info_set_sdma_info(struct kfd_dev *kfd)
 	case IP_VERSION(6, 1, 0):
 	case IP_VERSION(6, 1, 1):
 	case IP_VERSION(6, 1, 2):
+	case IP_VERSION(6, 1, 3):
 	case IP_VERSION(7, 0, 0):
 	case IP_VERSION(7, 0, 1):
 		/* Reserve 1 for paging and 1 for gfx */
@@ -180,6 +182,7 @@ static void kfd_device_info_set_event_interrupt_class(struct kfd_dev *kfd)
 	case IP_VERSION(11, 5, 0):
 	case IP_VERSION(11, 5, 1):
 	case IP_VERSION(11, 5, 2):
+	case IP_VERSION(11, 5, 3):
 		kfd->device_info.event_interrupt_class = &event_interrupt_class_v11;
 		break;
 	case IP_VERSION(12, 0, 0):
@@ -349,11 +352,6 @@ struct kfd_dev *kgd2kfd_probe(struct amdgpu_device *adev, bool vf)
 			f2g = &aldebaran_kfd2kgd;
 			break;
 		case IP_VERSION(9, 4, 3):
-			gfx_target_version = adev->rev_id >= 1 ? 90402
-					   : adev->flags & AMD_IS_APU ? 90400
-					   : 90401;
-			f2g = &gc_9_4_3_kfd2kgd;
-			break;
 		case IP_VERSION(9, 4, 4):
 			gfx_target_version = 90402;
 			f2g = &gc_9_4_3_kfd2kgd;
@@ -454,6 +452,10 @@ struct kfd_dev *kgd2kfd_probe(struct amdgpu_device *adev, bool vf)
 			gfx_target_version = 110502;
 			f2g = &gfx_v11_kfd2kgd;
 			break;
+		case IP_VERSION(11, 5, 3):
+			gfx_target_version = 110503;
+			f2g = &gfx_v11_kfd2kgd;
+			break;
 		case IP_VERSION(12, 0, 0):
 			gfx_target_version = 120000;
 			f2g = &gfx_v12_kfd2kgd;
@@ -493,6 +495,7 @@ struct kfd_dev *kgd2kfd_probe(struct amdgpu_device *adev, bool vf)
 	mutex_init(&kfd->doorbell_mutex);
 
 	ida_init(&kfd->doorbell_ida);
+	atomic_set(&kfd->kfd_processes_count, 0);
 
 	return kfd;
 }
@@ -583,9 +586,13 @@ static int kfd_gws_init(struct kfd_node *node)
 			&& kfd->mec2_fw_version >= 0x6b) ||
 		(KFD_GC_VERSION(node) >= IP_VERSION(11, 0, 0)
 			&& KFD_GC_VERSION(node) < IP_VERSION(12, 0, 0)
-			&& mes_rev >= 68))))
+			&& mes_rev >= 68) ||
+		(KFD_GC_VERSION(node) >= IP_VERSION(12, 0, 0))))) {
+		if (KFD_GC_VERSION(node) >= IP_VERSION(12, 0, 0))
+			node->adev->gds.gws_size = 64;
 		ret = amdgpu_amdkfd_alloc_gws(node->adev,
 				node->adev->gds.gws_size, &node->gws);
+	}
 
 	return ret;
 }
@@ -965,7 +972,7 @@ int kgd2kfd_pre_reset(struct kfd_dev *kfd,
 		kfd_smi_event_update_gpu_reset(node, false, reset_context);
 	}
 
-	kgd2kfd_suspend(kfd, false);
+	kgd2kfd_suspend(kfd, true);
 
 	for (i = 0; i < kfd->num_nodes; i++)
 		kfd_signal_reset_event(kfd->nodes[i]);
@@ -1007,13 +1014,33 @@ int kgd2kfd_post_reset(struct kfd_dev *kfd)
 	return 0;
 }
 
-bool kfd_is_locked(void)
+bool kfd_is_locked(struct kfd_dev *kfd)
 {
+	uint8_t id  = 0;
+	struct kfd_node *dev;
+
 	lockdep_assert_held(&kfd_processes_mutex);
-	return  (kfd_locked > 0);
+
+	/* check reset/suspend lock */
+	if (kfd_locked > 0)
+		return true;
+
+	if (kfd)
+		return kfd->kfd_dev_lock > 0;
+
+	/* check lock on all cgroup accessible devices */
+	while (kfd_topology_enum_kfd_devices(id++, &dev) == 0) {
+		if (!dev || kfd_devcgroup_check_permission(dev))
+			continue;
+
+		if (dev->kfd->kfd_dev_lock > 0)
+			return true;
+	}
+
+	return false;
 }
 
-void kgd2kfd_suspend(struct kfd_dev *kfd, bool run_pm)
+void kgd2kfd_suspend(struct kfd_dev *kfd, bool suspend_proc)
 {
 	struct kfd_node *node;
 	int i;
@@ -1021,14 +1048,8 @@ void kgd2kfd_suspend(struct kfd_dev *kfd, bool run_pm)
 	if (!kfd->init_complete)
 		return;
 
-	/* for runtime suspend, skip locking kfd */
-	if (!run_pm) {
-		mutex_lock(&kfd_processes_mutex);
-		/* For first KFD device suspend all the KFD processes */
-		if (++kfd_locked == 1)
-			kfd_suspend_all_processes();
-		mutex_unlock(&kfd_processes_mutex);
-	}
+	if (suspend_proc)
+		kgd2kfd_suspend_process(kfd);
 
 	for (i = 0; i < kfd->num_nodes; i++) {
 		node = kfd->nodes[i];
@@ -1036,7 +1057,7 @@ void kgd2kfd_suspend(struct kfd_dev *kfd, bool run_pm)
 	}
 }
 
-int kgd2kfd_resume(struct kfd_dev *kfd, bool run_pm)
+int kgd2kfd_resume(struct kfd_dev *kfd, bool resume_proc)
 {
 	int ret, i;
 
@@ -1049,14 +1070,36 @@ int kgd2kfd_resume(struct kfd_dev *kfd, bool run_pm)
 			return ret;
 	}
 
-	/* for runtime resume, skip unlocking kfd */
-	if (!run_pm) {
-		mutex_lock(&kfd_processes_mutex);
-		if (--kfd_locked == 0)
-			ret = kfd_resume_all_processes();
-		WARN_ONCE(kfd_locked < 0, "KFD suspend / resume ref. error");
-		mutex_unlock(&kfd_processes_mutex);
-	}
+	if (resume_proc)
+		ret = kgd2kfd_resume_process(kfd);
+
+	return ret;
+}
+
+void kgd2kfd_suspend_process(struct kfd_dev *kfd)
+{
+	if (!kfd->init_complete)
+		return;
+
+	mutex_lock(&kfd_processes_mutex);
+	/* For first KFD device suspend all the KFD processes */
+	if (++kfd_locked == 1)
+		kfd_suspend_all_processes();
+	mutex_unlock(&kfd_processes_mutex);
+}
+
+int kgd2kfd_resume_process(struct kfd_dev *kfd)
+{
+	int ret = 0;
+
+	if (!kfd->init_complete)
+		return 0;
+
+	mutex_lock(&kfd_processes_mutex);
+	if (--kfd_locked == 0)
+		ret = kfd_resume_all_processes();
+	WARN_ONCE(kfd_locked < 0, "KFD suspend / resume ref. error");
+	mutex_unlock(&kfd_processes_mutex);
 
 	return ret;
 }
@@ -1091,7 +1134,15 @@ void kgd2kfd_interrupt(struct kfd_dev *kfd, const void *ih_ring_entry)
 	}
 
 	for (i = 0; i < kfd->num_nodes; i++) {
-		node = kfd->nodes[i];
+		/* Race if another thread in b/w
+		 * kfd_cleanup_nodes and kfree(kfd),
+		 * when kfd->nodes[i] = NULL
+		 */
+		if (kfd->nodes[i])
+			node = kfd->nodes[i];
+		else
+			return;
+
 		spin_lock_irqsave(&node->interrupt_lock, flags);
 
 		if (node->interrupts_active
@@ -1436,24 +1487,62 @@ unsigned int kfd_get_num_xgmi_sdma_engines(struct kfd_node *node)
 		kfd_get_num_sdma_engines(node);
 }
 
-int kgd2kfd_check_and_lock_kfd(void)
+int kgd2kfd_check_and_lock_kfd(struct kfd_dev *kfd)
 {
+	struct kfd_process *p;
+	int r = 0, temp, idx;
+
 	mutex_lock(&kfd_processes_mutex);
-	if (!hash_empty(kfd_processes_table) || kfd_is_locked()) {
-		mutex_unlock(&kfd_processes_mutex);
-		return -EBUSY;
+
+	/* kfd_processes_count is per kfd_dev, return -EBUSY without
+	 * further check
+	 */
+	if (!!atomic_read(&kfd->kfd_processes_count)) {
+		pr_debug("process_wq_release not finished\n");
+		r = -EBUSY;
+		goto out;
 	}
 
-	++kfd_locked;
+	if (hash_empty(kfd_processes_table) && !kfd_is_locked(kfd))
+		goto out;
+
+	/* fail under system reset/resume or kfd device is partition switching. */
+	if (kfd_is_locked(kfd)) {
+		r = -EBUSY;
+		goto out;
+	}
+
+	/*
+	 * ensure all running processes are cgroup excluded from device before mode switch.
+	 * i.e. no pdd was created on the process socket.
+	 */
+	idx = srcu_read_lock(&kfd_processes_srcu);
+	hash_for_each_rcu(kfd_processes_table, temp, p, kfd_processes) {
+		int i;
+
+		for (i = 0; i < p->n_pdds; i++) {
+			if (p->pdds[i]->dev->kfd != kfd)
+				continue;
+
+			r = -EBUSY;
+			goto proc_check_unlock;
+		}
+	}
+
+proc_check_unlock:
+	srcu_read_unlock(&kfd_processes_srcu, idx);
+out:
+	if (!r)
+		++kfd->kfd_dev_lock;
 	mutex_unlock(&kfd_processes_mutex);
 
-	return 0;
+	return r;
 }
 
-void kgd2kfd_unlock_kfd(void)
+void kgd2kfd_unlock_kfd(struct kfd_dev *kfd)
 {
 	mutex_lock(&kfd_processes_mutex);
-	--kfd_locked;
+	--kfd->kfd_dev_lock;
 	mutex_unlock(&kfd_processes_mutex);
 }
 
@@ -1479,6 +1568,25 @@ int kgd2kfd_start_sched(struct kfd_dev *kfd, uint32_t node_id)
 	return ret;
 }
 
+int kgd2kfd_start_sched_all_nodes(struct kfd_dev *kfd)
+{
+	struct kfd_node *node;
+	int i, r;
+
+	if (!kfd->init_complete)
+		return 0;
+
+	for (i = 0; i < kfd->num_nodes; i++) {
+		node = kfd->nodes[i];
+		r = node->dqm->ops.unhalt(node->dqm);
+		if (r) {
+			dev_err(kfd_device, "Error in starting scheduler\n");
+			return r;
+		}
+	}
+	return 0;
+}
+
 int kgd2kfd_stop_sched(struct kfd_dev *kfd, uint32_t node_id)
 {
 	struct kfd_node *node;
@@ -1494,6 +1602,23 @@ int kgd2kfd_stop_sched(struct kfd_dev *kfd, uint32_t node_id)
 
 	node = kfd->nodes[node_id];
 	return node->dqm->ops.halt(node->dqm);
+}
+
+int kgd2kfd_stop_sched_all_nodes(struct kfd_dev *kfd)
+{
+	struct kfd_node *node;
+	int i, r;
+
+	if (!kfd->init_complete)
+		return 0;
+
+	for (i = 0; i < kfd->num_nodes; i++) {
+		node = kfd->nodes[i];
+		r = node->dqm->ops.halt(node->dqm);
+		if (r)
+			return r;
+	}
+	return 0;
 }
 
 bool kgd2kfd_compute_active(struct kfd_dev *kfd, uint32_t node_id)
@@ -1558,7 +1683,7 @@ bool kgd2kfd_vmfault_fast_path(struct amdgpu_device *adev, struct amdgpu_iv_entr
 	u32 cam_index;
 
 	if (entry->ih == &adev->irq.ih_soft || entry->ih == &adev->irq.ih1) {
-		p = kfd_lookup_process_by_pasid(entry->pasid);
+		p = kfd_lookup_process_by_pasid(entry->pasid, NULL);
 		if (!p)
 			return true;
 
@@ -1590,6 +1715,11 @@ int kfd_debugfs_hang_hws(struct kfd_node *dev)
 {
 	if (dev->dqm->sched_policy != KFD_SCHED_POLICY_HWS) {
 		pr_err("HWS is not enabled");
+		return -EINVAL;
+	}
+
+	if (dev->kfd->shared_resources.enable_mes) {
+		dev_err(dev->adev->dev, "Inducing MES hang is not supported\n");
 		return -EINVAL;
 	}
 

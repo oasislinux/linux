@@ -112,47 +112,46 @@ static void rpc_clnt_remove_pipedir(struct rpc_clnt *clnt)
 	}
 }
 
-static struct dentry *rpc_setup_pipedir_sb(struct super_block *sb,
+static int rpc_setup_pipedir_sb(struct super_block *sb,
 				    struct rpc_clnt *clnt)
 {
 	static uint32_t clntid;
 	const char *dir_name = clnt->cl_program->pipe_dir_name;
 	char name[15];
-	struct dentry *dir, *dentry;
+	struct dentry *dir;
+	int err;
 
 	dir = rpc_d_lookup_sb(sb, dir_name);
 	if (dir == NULL) {
 		pr_info("RPC: pipefs directory doesn't exist: %s\n", dir_name);
-		return dir;
+		return -ENOENT;
 	}
 	for (;;) {
 		snprintf(name, sizeof(name), "clnt%x", (unsigned int)clntid++);
 		name[sizeof(name) - 1] = '\0';
-		dentry = rpc_create_client_dir(dir, name, clnt);
-		if (!IS_ERR(dentry))
+		err = rpc_create_client_dir(dir, name, clnt);
+		if (!err)
 			break;
-		if (dentry == ERR_PTR(-EEXIST))
+		if (err == -EEXIST)
 			continue;
 		printk(KERN_INFO "RPC: Couldn't create pipefs entry"
-				" %s/%s, error %ld\n",
-				dir_name, name, PTR_ERR(dentry));
+				" %s/%s, error %d\n",
+				dir_name, name, err);
 		break;
 	}
 	dput(dir);
-	return dentry;
+	return err;
 }
 
 static int
 rpc_setup_pipedir(struct super_block *pipefs_sb, struct rpc_clnt *clnt)
 {
-	struct dentry *dentry;
-
 	clnt->pipefs_sb = pipefs_sb;
 
 	if (clnt->cl_program->pipe_dir_name != NULL) {
-		dentry = rpc_setup_pipedir_sb(pipefs_sb, clnt);
-		if (IS_ERR(dentry))
-			return PTR_ERR(dentry);
+		int err = rpc_setup_pipedir_sb(pipefs_sb, clnt);
+		if (err && err != -ENOENT)
+			return err;
 	}
 	return 0;
 }
@@ -180,16 +179,9 @@ static int rpc_clnt_skip_event(struct rpc_clnt *clnt, unsigned long event)
 static int __rpc_clnt_handle_event(struct rpc_clnt *clnt, unsigned long event,
 				   struct super_block *sb)
 {
-	struct dentry *dentry;
-
 	switch (event) {
 	case RPC_PIPEFS_MOUNT:
-		dentry = rpc_setup_pipedir_sb(sb, clnt);
-		if (!dentry)
-			return -ENOENT;
-		if (IS_ERR(dentry))
-			return PTR_ERR(dentry);
-		break;
+		return rpc_setup_pipedir_sb(sb, clnt);
 	case RPC_PIPEFS_UMOUNT:
 		__rpc_clnt_remove_pipedir(clnt);
 		break;
@@ -269,9 +261,6 @@ static struct rpc_xprt *rpc_clnt_set_transport(struct rpc_clnt *clnt,
 	spin_lock(&clnt->cl_lock);
 	old = rcu_dereference_protected(clnt->cl_xprt,
 			lockdep_is_held(&clnt->cl_lock));
-
-	if (!xprt_bound(xprt))
-		clnt->cl_autobind = 1;
 
 	clnt->cl_timeout = timeout;
 	rcu_assign_pointer(clnt->cl_xprt, xprt);
@@ -512,6 +501,8 @@ static struct rpc_clnt *rpc_create_xprt(struct rpc_create_args *args,
 		clnt->cl_discrtry = 1;
 	if (!(args->flags & RPC_CLNT_CREATE_QUIET))
 		clnt->cl_chatty = 1;
+	if (args->flags & RPC_CLNT_CREATE_NETUNREACH_FATAL)
+		clnt->cl_netunreach_fatal = 1;
 
 	return clnt;
 }
@@ -662,6 +653,7 @@ static struct rpc_clnt *__rpc_clone_client(struct rpc_create_args *args,
 	new->cl_noretranstimeo = clnt->cl_noretranstimeo;
 	new->cl_discrtry = clnt->cl_discrtry;
 	new->cl_chatty = clnt->cl_chatty;
+	new->cl_netunreach_fatal = clnt->cl_netunreach_fatal;
 	new->cl_principal = clnt->cl_principal;
 	new->cl_max_connect = clnt->cl_max_connect;
 	return new;
@@ -1195,6 +1187,8 @@ void rpc_task_set_client(struct rpc_task *task, struct rpc_clnt *clnt)
 		task->tk_flags |= RPC_TASK_TIMEOUT;
 	if (clnt->cl_noretranstimeo)
 		task->tk_flags |= RPC_TASK_NO_RETRANS_TIMEOUT;
+	if (clnt->cl_netunreach_fatal)
+		task->tk_flags |= RPC_TASK_NETUNREACH_FATAL;
 	atomic_inc(&clnt->cl_task_count);
 }
 
@@ -1463,12 +1457,12 @@ static int rpc_sockname(struct net *net, struct sockaddr *sap, size_t salen,
 	switch (sap->sa_family) {
 	case AF_INET:
 		err = kernel_bind(sock,
-				(struct sockaddr *)&rpc_inaddr_loopback,
+				(struct sockaddr_unsized *)&rpc_inaddr_loopback,
 				sizeof(rpc_inaddr_loopback));
 		break;
 	case AF_INET6:
 		err = kernel_bind(sock,
-				(struct sockaddr *)&rpc_in6addr_loopback,
+				(struct sockaddr_unsized *)&rpc_in6addr_loopback,
 				sizeof(rpc_in6addr_loopback));
 		break;
 	default:
@@ -1480,7 +1474,7 @@ static int rpc_sockname(struct net *net, struct sockaddr *sap, size_t salen,
 		goto out_release;
 	}
 
-	err = kernel_connect(sock, sap, salen, 0);
+	err = kernel_connect(sock, (struct sockaddr_unsized *)sap, salen, 0);
 	if (err < 0) {
 		dprintk("RPC:       can't connect UDP socket (%d)\n", err);
 		goto out_release;
@@ -2102,14 +2096,17 @@ call_bind_status(struct rpc_task *task)
 	case -EPROTONOSUPPORT:
 		trace_rpcb_bind_version_err(task);
 		goto retry_timeout;
+	case -ENETDOWN:
+	case -ENETUNREACH:
+		if (task->tk_flags & RPC_TASK_NETUNREACH_FATAL)
+			break;
+		fallthrough;
 	case -ECONNREFUSED:		/* connection problems */
 	case -ECONNRESET:
 	case -ECONNABORTED:
 	case -ENOTCONN:
 	case -EHOSTDOWN:
-	case -ENETDOWN:
 	case -EHOSTUNREACH:
-	case -ENETUNREACH:
 	case -EPIPE:
 		trace_rpcb_unreachable_err(task);
 		if (!RPC_IS_SOFTCONN(task)) {
@@ -2191,19 +2188,22 @@ call_connect_status(struct rpc_task *task)
 
 	task->tk_status = 0;
 	switch (status) {
+	case -ENETDOWN:
+	case -ENETUNREACH:
+		if (task->tk_flags & RPC_TASK_NETUNREACH_FATAL)
+			break;
+		fallthrough;
 	case -ECONNREFUSED:
 	case -ECONNRESET:
 		/* A positive refusal suggests a rebind is needed. */
-		if (RPC_IS_SOFTCONN(task))
-			break;
 		if (clnt->cl_autobind) {
 			rpc_force_rebind(clnt);
+			if (RPC_IS_SOFTCONN(task))
+				break;
 			goto out_retry;
 		}
 		fallthrough;
 	case -ECONNABORTED:
-	case -ENETDOWN:
-	case -ENETUNREACH:
 	case -EHOSTUNREACH:
 	case -EPIPE:
 	case -EPROTO:
@@ -2455,10 +2455,13 @@ call_status(struct rpc_task *task)
 	trace_rpc_call_status(task);
 	task->tk_status = 0;
 	switch(status) {
-	case -EHOSTDOWN:
 	case -ENETDOWN:
-	case -EHOSTUNREACH:
 	case -ENETUNREACH:
+		if (task->tk_flags & RPC_TASK_NETUNREACH_FATAL)
+			goto out_exit;
+		fallthrough;
+	case -EHOSTDOWN:
+	case -EHOSTUNREACH:
 	case -EPERM:
 		if (RPC_IS_SOFTCONN(task))
 			goto out_exit;
@@ -2760,8 +2763,13 @@ out_verifier:
 	case -EPROTONOSUPPORT:
 		goto out_err;
 	case -EACCES:
-		/* Re-encode with a fresh cred */
-		fallthrough;
+		/* possible RPCSEC_GSS out-of-sequence event (RFC2203),
+		 * reset recv state and keep waiting, don't retransmit
+		 */
+		task->tk_rqstp->rq_reply_bytes_recvd = 0;
+		task->tk_status = xprt_request_enqueue_receive(task);
+		task->tk_action = call_transmit_status;
+		return -EBADMSG;
 	default:
 		goto out_garbage;
 	}

@@ -59,14 +59,15 @@ comma (",").
 
     :ref:`/sys/kernel/mm/damon <sysfs_root>`/admin
     │ :ref:`kdamonds <sysfs_kdamonds>`/nr_kdamonds
-    │ │ :ref:`0 <sysfs_kdamond>`/state,pid
+    │ │ :ref:`0 <sysfs_kdamond>`/state,pid,refresh_ms
     │ │ │ :ref:`contexts <sysfs_contexts>`/nr_contexts
-    │ │ │ │ :ref:`0 <sysfs_context>`/avail_operations,operations
+    │ │ │ │ :ref:`0 <sysfs_context>`/avail_operations,operations,addr_unit
     │ │ │ │ │ :ref:`monitoring_attrs <sysfs_monitoring_attrs>`/
     │ │ │ │ │ │ intervals/sample_us,aggr_us,update_us
+    │ │ │ │ │ │ │ intervals_goal/access_bp,aggrs,min_sample_us,max_sample_us
     │ │ │ │ │ │ nr_regions/min,max
     │ │ │ │ │ :ref:`targets <sysfs_targets>`/nr_targets
-    │ │ │ │ │ │ :ref:`0 <sysfs_target>`/pid_target
+    │ │ │ │ │ │ :ref:`0 <sysfs_target>`/pid_target,obsolete_target
     │ │ │ │ │ │ │ :ref:`regions <sysfs_regions>`/nr_regions
     │ │ │ │ │ │ │ │ :ref:`0 <sysfs_region>`/start,end
     │ │ │ │ │ │ │ │ ...
@@ -80,10 +81,12 @@ comma (",").
     │ │ │ │ │ │ │ :ref:`quotas <sysfs_quotas>`/ms,bytes,reset_interval_ms,effective_bytes
     │ │ │ │ │ │ │ │ weights/sz_permil,nr_accesses_permil,age_permil
     │ │ │ │ │ │ │ │ :ref:`goals <sysfs_schemes_quota_goals>`/nr_goals
-    │ │ │ │ │ │ │ │ │ 0/target_metric,target_value,current_value
+    │ │ │ │ │ │ │ │ │ 0/target_metric,target_value,current_value,nid,path
     │ │ │ │ │ │ │ :ref:`watermarks <sysfs_watermarks>`/metric,interval_us,high,mid,low
-    │ │ │ │ │ │ │ :ref:`filters <sysfs_filters>`/nr_filters
-    │ │ │ │ │ │ │ │ 0/type,matching,allow,memcg_path,addr_start,addr_end,target_idx
+    │ │ │ │ │ │ │ :ref:`{core_,ops_,}filters <sysfs_filters>`/nr_filters
+    │ │ │ │ │ │ │ │ 0/type,matching,allow,memcg_path,addr_start,addr_end,target_idx,min,max
+    │ │ │ │ │ │ │ :ref:`dests <damon_sysfs_dests>`/nr_dests
+    │ │ │ │ │ │ │ │ 0/id,weight
     │ │ │ │ │ │ │ :ref:`stats <sysfs_schemes_stats>`/nr_tried,sz_tried,nr_applied,sz_applied,sz_ops_filter_passed,qt_exceeds
     │ │ │ │ │ │ │ :ref:`tried_regions <sysfs_schemes_tried_regions>`/total_bytes
     │ │ │ │ │ │ │ │ 0/start,end,nr_accesses,age,sz_filter_passed
@@ -120,8 +123,8 @@ kdamond.
 kdamonds/<N>/
 -------------
 
-In each kdamond directory, two files (``state`` and ``pid``) and one directory
-(``contexts``) exist.
+In each kdamond directory, three files (``state``, ``pid`` and ``refresh_ms``)
+and one directory (``contexts``) exist.
 
 Reading ``state`` returns ``on`` if the kdamond is currently running, or
 ``off`` if it is not running.
@@ -131,7 +134,13 @@ Users can write below commands for the kdamond to the ``state`` file.
 - ``on``: Start running.
 - ``off``: Stop running.
 - ``commit``: Read the user inputs in the sysfs files except ``state`` file
-  again.
+  again.  Monitoring :ref:`target region <sysfs_regions>` inputs are also be
+  ignored if no target region is specified.
+- ``update_tuned_intervals``: Update the contents of ``sample_us`` and
+  ``aggr_us`` files of the kdamond with the auto-tuning applied ``sampling
+  interval`` and ``aggregation interval`` for the files.  Please refer to
+  :ref:`intervals_goal section <damon_usage_sysfs_monitoring_intervals_goal>`
+  for more details.
 - ``commit_schemes_quota_goals``: Read the DAMON-based operation schemes'
   :ref:`quota goals <sysfs_schemes_quota_goals>`.
 - ``update_schemes_stats``: Update the contents of stats files for each
@@ -153,6 +162,13 @@ Users can write below commands for the kdamond to the ``state`` file.
 
 If the state is ``on``, reading ``pid`` shows the pid of the kdamond thread.
 
+Users can ask the kernel to periodically update files showing auto-tuned
+parameters and DAMOS stats instead of manually writing
+``update_tuned_intervals`` like keywords to ``state`` file.  For this, users
+should write the desired update time interval in milliseconds to ``refresh_ms``
+file.  If the interval is zero, the periodic update is disabled.  Reading the
+file shows currently set time interval.
+
 ``contexts`` directory contains files for controlling the monitoring contexts
 that this kdamond will execute.
 
@@ -173,9 +189,9 @@ details).  At the moment, only one context per kdamond is supported, so only
 contexts/<N>/
 -------------
 
-In each context directory, two files (``avail_operations`` and ``operations``)
-and three directories (``monitoring_attrs``, ``targets``, and ``schemes``)
-exist.
+In each context directory, three files (``avail_operations``, ``operations``
+and ``addr_unit``) and three directories (``monitoring_attrs``, ``targets``,
+and ``schemes``) exist.
 
 DAMON supports multiple types of :ref:`monitoring operations
 <damon_design_configurable_operations_set>`, including those for virtual address
@@ -189,6 +205,9 @@ brief explanations.
 You can set and get what type of monitoring operations DAMON will use for the
 context by writing one of the keywords listed in ``avail_operations`` file and
 reading from the ``operations`` file.
+
+``addr_unit`` file is for setting and getting the :ref:`address unit
+<damon_design_addr_unit>` parameter of the operations set.
 
 .. _sysfs_monitoring_attrs:
 
@@ -213,6 +232,25 @@ writing to and rading from the files.
 For more details about the intervals and monitoring regions range, please refer
 to the Design document (:doc:`/mm/damon/design`).
 
+.. _damon_usage_sysfs_monitoring_intervals_goal:
+
+contexts/<N>/monitoring_attrs/intervals/intervals_goal/
+-------------------------------------------------------
+
+Under the ``intervals`` directory, one directory for automated tuning of
+``sample_us`` and ``aggr_us``, namely ``intervals_goal`` directory also exists.
+Under the directory, four files for the auto-tuning control, namely
+``access_bp``, ``aggrs``, ``min_sample_us`` and ``max_sample_us`` exist.
+Please refer to  the :ref:`design document of the feature
+<damon_design_monitoring_intervals_autotuning>` for the internal of the tuning
+mechanism.  Reading and writing the four files under ``intervals_goal``
+directory shows and updates the tuning parameters that described in the
+:ref:design doc <damon_design_monitoring_intervals_autotuning>` with the same
+names.  The tuning starts with the user-set ``sample_us`` and ``aggr_us``.  The
+tuning-applied current values of the two intervals can be read from the
+``sample_us`` and ``aggr_us`` files after writing ``update_tuned_intervals`` to
+the ``state`` file.
+
 .. _sysfs_targets:
 
 contexts/<N>/targets/
@@ -227,12 +265,19 @@ to ``N-1``.  Each directory represents each monitoring target.
 targets/<N>/
 ------------
 
-In each target directory, one file (``pid_target``) and one directory
-(``regions``) exist.
+In each target directory, two files (``pid_target`` and ``obsolete_target``)
+and one directory (``regions``) exist.
 
 If you wrote ``vaddr`` to the ``contexts/<N>/operations``, each target should
 be a process.  You can specify the process to DAMON by writing the pid of the
 process to the ``pid_target`` file.
+
+Users can selectively remove targets in the middle of the targets array by
+writing non-zero value to ``obsolete_target`` file and committing it (writing
+``commit`` to ``state`` file).  DAMON will remove the matching targets from its
+internal targets array.  Users are responsible to construct target directories
+again, so that those correctly represent the changed internal targets array.
+
 
 .. _sysfs_regions:
 
@@ -251,6 +296,11 @@ as they want, by writing proper values to the files under this directory.
 In the beginning, this directory has only one file, ``nr_regions``.  Writing a
 number (``N``) to the file creates the number of child directories named ``0``
 to ``N-1``.  Each directory represents each initial monitoring target region.
+
+If ``nr_regions`` is zero when committing new DAMON parameters online (writing
+``commit`` to ``state`` file of :ref:`kdamond <sysfs_kdamond>`), the commit
+logic ignores the target regions.  In other words, the current monitoring
+results for the target are preserved.
 
 .. _sysfs_region:
 
@@ -282,9 +332,10 @@ to ``N-1``.  Each directory represents each DAMON-based operation scheme.
 schemes/<N>/
 ------------
 
-In each scheme directory, five directories (``access_pattern``, ``quotas``,
-``watermarks``, ``filters``, ``stats``, and ``tried_regions``) and three files
-(``action``, ``target_nid`` and ``apply_interval``) exist.
+In each scheme directory, eight directories (``access_pattern``, ``quotas``,
+``watermarks``, ``core_filters``, ``ops_filters``, ``filters``, ``dests``,
+``stats``, and ``tried_regions``) and three files (``action``, ``target_nid``
+and ``apply_interval``) exist.
 
 The ``action`` file is for setting and getting the scheme's :ref:`action
 <damon_design_damos_action>`.  The keywords that can be written to and read
@@ -322,7 +373,7 @@ The directory for the :ref:`quotas <damon_design_damos_quotas>` of the given
 DAMON-based operation scheme.
 
 Under ``quotas`` directory, four files (``ms``, ``bytes``,
-``reset_interval_ms``, ``effective_bytes``) and two directores (``weights`` and
+``reset_interval_ms``, ``effective_bytes``) and two directories (``weights`` and
 ``goals``) exist.
 
 You can set the ``time quota`` in milliseconds, ``size quota`` in bytes, and
@@ -364,11 +415,11 @@ number (``N``) to the file creates the number of child directories named ``0``
 to ``N-1``.  Each directory represents each goal and current achievement.
 Among the multiple feedback, the best one is used.
 
-Each goal directory contains three files, namely ``target_metric``,
-``target_value`` and ``current_value``.  Users can set and get the three
-parameters for the quota auto-tuning goals that specified on the :ref:`design
-doc <damon_design_damos_quotas_auto_tuning>` by writing to and reading from each
-of the files.  Note that users should further write
+Each goal directory contains five files, namely ``target_metric``,
+``target_value``, ``current_value`` ``nid`` and ``path``.  Users can set and
+get the five parameters for the quota auto-tuning goals that specified on the
+:ref:`design doc <damon_design_damos_quotas_auto_tuning>` by writing to and
+reading from each of the files.  Note that users should further write
 ``commit_schemes_quota_goals`` to the ``state`` file of the :ref:`kdamond
 directory <sysfs_kdamond>` to pass the feedback to DAMON.
 
@@ -395,33 +446,43 @@ The ``interval`` should written in microseconds unit.
 
 .. _sysfs_filters:
 
-schemes/<N>/filters/
---------------------
+schemes/<N>/{core\_,ops\_,}filters/
+-----------------------------------
 
-The directory for the :ref:`filters <damon_design_damos_filters>` of the given
+Directories for :ref:`filters <damon_design_damos_filters>` of the given
 DAMON-based operation scheme.
 
-In the beginning, this directory has only one file, ``nr_filters``.  Writing a
+``core_filters`` and ``ops_filters`` directories are for the filters handled by
+the DAMON core layer and operations set layer, respectively.  ``filters``
+directory can be used for installing filters regardless of their handled
+layers.  Filters that requested by ``core_filters`` and ``ops_filters`` will be
+installed before those of ``filters``.  All three directories have same files.
+
+Use of ``filters`` directory can make expecting evaluation orders of given
+filters with the files under directory bit confusing.  Users are hence
+recommended to use ``core_filters`` and ``ops_filters`` directories.  The
+``filters`` directory could be deprecated in future.
+
+In the beginning, the directory has only one file, ``nr_filters``.  Writing a
 number (``N``) to the file creates the number of child directories named ``0``
 to ``N-1``.  Each directory represents each filter.  The filters are evaluated
 in the numeric order.
 
-Each filter directory contains seven files, namely ``type``, ``matching``,
-``allow``, ``memcg_path``, ``addr_start``, ``addr_end``, and ``target_idx``.
-To ``type`` file, you can write one of five special keywords: ``anon`` for
-anonymous pages, ``memcg`` for specific memory cgroup, ``young`` for young
-pages, ``addr`` for specific address range (an open-ended interval), or
-``target`` for specific DAMON monitoring target filtering.  Meaning of the
-types are same to the description on the :ref:`design doc
-<damon_design_damos_filters>`.
+Each filter directory contains nine files, namely ``type``, ``matching``,
+``allow``, ``memcg_path``, ``addr_start``, ``addr_end``, ``min``, ``max``
+and ``target_idx``.  To ``type`` file, you can write the type of the filter.
+Refer to :ref:`the design doc <damon_design_damos_filters>` for available type
+names, their meaning and on what layer those are handled.
 
-In case of the memory cgroup filtering, you can specify the memory cgroup of
-the interest by writing the path of the memory cgroup from the cgroups mount
-point to ``memcg_path`` file.  In case of the address range filtering, you can
-specify the start and end address of the range to ``addr_start`` and
-``addr_end`` files, respectively.  For the DAMON monitoring target filtering,
-you can specify the index of the target between the list of the DAMON context's
-monitoring targets list to ``target_idx`` file.
+For ``memcg`` type, you can specify the memory cgroup of the interest by
+writing the path of the memory cgroup from the cgroups mount point to
+``memcg_path`` file.  For ``addr`` type, you can specify the start and end
+address of the range (open-ended interval) to ``addr_start`` and ``addr_end``
+files, respectively.  For ``hugepage_size`` type, you can specify the minimum
+and maximum size of the range (closed interval) to ``min`` and ``max`` files,
+respectively.  For ``target`` type, you can specify the index of the target
+between the list of the DAMON context's monitoring targets list to
+``target_idx`` file.
 
 You can write ``Y`` or ``N`` to ``matching`` file to specify whether the filter
 is for memory that matches the ``type``.  You can write ``Y`` or ``N`` to
@@ -431,6 +492,7 @@ the ``type`` and ``matching`` should be allowed or not.
 For example, below restricts a DAMOS action to be applied to only non-anonymous
 pages of all memory cgroups except ``/having_care_already``.::
 
+    # cd ops_filters/0/
     # echo 2 > nr_filters
     # # disallow anonymous pages
     echo anon > 0/type
@@ -446,6 +508,29 @@ Refer to the :ref:`DAMOS filters design documentation
 <damon_design_damos_filters>` for more details including how multiple filters
 of different ``allow`` works, when each of the filters are supported, and
 differences on stats.
+
+.. _damon_sysfs_dests:
+
+schemes/<N>/dests/
+------------------
+
+Directory for specifying the destinations of given DAMON-based operation
+scheme's action.  This directory is ignored if the action of the given scheme
+is not supporting multiple destinations.  Only ``DAMOS_MIGRATE_{HOT,COLD}``
+actions are supporting multiple destinations.
+
+In the beginning, the directory has only one file, ``nr_dests``.  Writing a
+number (``N``) to the file creates the number of child directories named ``0``
+to ``N-1``.  Each directory represents each action destination.
+
+Each destination directory contains two files, namely ``id`` and ``weight``.
+Users can write and read the identifier of the destination to ``id`` file.
+For ``DAMOS_MIGRATE_{HOT,COLD}`` actions, the migrate destination node's node
+id should be written to ``id`` file.  Users can write and read the weight of
+the destination among the given destinations to the ``weight`` file.  The
+weight can be an arbitrary integer.  When DAMOS apply the action to each entity
+of the memory region, it will select the destination of the action based on the
+relative weights of the destinations.
 
 .. _sysfs_schemes_stats:
 

@@ -806,7 +806,7 @@ static int radeon_lvds_get_modes(struct drm_connector *connector)
 }
 
 static enum drm_mode_status radeon_lvds_mode_valid(struct drm_connector *connector,
-				  struct drm_display_mode *mode)
+				  const struct drm_display_mode *mode)
 {
 	struct drm_encoder *encoder = radeon_best_single_encoder(connector);
 
@@ -875,10 +875,8 @@ radeon_lvds_detect(struct drm_connector *connector, bool force)
 
 	radeon_connector_update_scratch_regs(connector, ret);
 
-	if (!drm_kms_helper_is_poll_worker()) {
-		pm_runtime_mark_last_busy(connector->dev->dev);
+	if (!drm_kms_helper_is_poll_worker())
 		pm_runtime_put_autosuspend(connector->dev->dev);
-	}
 
 	return ret;
 }
@@ -968,7 +966,7 @@ static int radeon_vga_get_modes(struct drm_connector *connector)
 }
 
 static enum drm_mode_status radeon_vga_mode_valid(struct drm_connector *connector,
-				  struct drm_display_mode *mode)
+				  const struct drm_display_mode *mode)
 {
 	struct drm_device *dev = connector->dev;
 	struct radeon_device *rdev = dev->dev_private;
@@ -1066,10 +1064,8 @@ radeon_vga_detect(struct drm_connector *connector, bool force)
 	radeon_connector_update_scratch_regs(connector, ret);
 
 out:
-	if (!drm_kms_helper_is_poll_worker()) {
-		pm_runtime_mark_last_busy(connector->dev->dev);
+	if (!drm_kms_helper_is_poll_worker())
 		pm_runtime_put_autosuspend(connector->dev->dev);
-	}
 
 	return ret;
 }
@@ -1116,7 +1112,7 @@ static int radeon_tv_get_modes(struct drm_connector *connector)
 }
 
 static enum drm_mode_status radeon_tv_mode_valid(struct drm_connector *connector,
-				struct drm_display_mode *mode)
+				const struct drm_display_mode *mode)
 {
 	if ((mode->hdisplay > 1024) || (mode->vdisplay > 768))
 		return MODE_CLOCK_RANGE;
@@ -1154,10 +1150,8 @@ radeon_tv_detect(struct drm_connector *connector, bool force)
 		ret = radeon_connector_analog_encoder_conflict_solve(connector, encoder, ret, false);
 	radeon_connector_update_scratch_regs(connector, ret);
 
-	if (!drm_kms_helper_is_poll_worker()) {
-		pm_runtime_mark_last_busy(connector->dev->dev);
+	if (!drm_kms_helper_is_poll_worker())
 		pm_runtime_put_autosuspend(connector->dev->dev);
-	}
 
 	return ret;
 }
@@ -1402,10 +1396,8 @@ out:
 	}
 
 exit:
-	if (!drm_kms_helper_is_poll_worker()) {
-		pm_runtime_mark_last_busy(connector->dev->dev);
+	if (!drm_kms_helper_is_poll_worker())
 		pm_runtime_put_autosuspend(connector->dev->dev);
-	}
 
 	return ret;
 }
@@ -1447,7 +1439,7 @@ static void radeon_dvi_force(struct drm_connector *connector)
 }
 
 static enum drm_mode_status radeon_dvi_mode_valid(struct drm_connector *connector,
-				  struct drm_display_mode *mode)
+				  const struct drm_display_mode *mode)
 {
 	struct drm_device *dev = connector->dev;
 	struct radeon_device *rdev = dev->dev_private;
@@ -1714,16 +1706,14 @@ radeon_dp_detect(struct drm_connector *connector, bool force)
 	}
 
 out:
-	if (!drm_kms_helper_is_poll_worker()) {
-		pm_runtime_mark_last_busy(connector->dev->dev);
+	if (!drm_kms_helper_is_poll_worker())
 		pm_runtime_put_autosuspend(connector->dev->dev);
-	}
 
 	return ret;
 }
 
 static enum drm_mode_status radeon_dp_mode_valid(struct drm_connector *connector,
-				  struct drm_display_mode *mode)
+				  const struct drm_display_mode *mode)
 {
 	struct drm_device *dev = connector->dev;
 	struct radeon_device *rdev = dev->dev_private;

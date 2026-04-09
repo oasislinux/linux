@@ -9,8 +9,7 @@
  *	    Frank Munzert <munzert@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "vmur"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "vmur: " fmt
 
 #include <linux/cdev.h>
 #include <linux/slab.h>
@@ -18,6 +17,7 @@
 #include <linux/kobject.h>
 
 #include <linux/uaccess.h>
+#include <asm/machine.h>
 #include <asm/cio.h>
 #include <asm/ccwdev.h>
 #include <asm/debug.h>
@@ -154,7 +154,7 @@ static struct urdev *urdev_get_from_devno(u16 devno)
 	struct ccw_device *cdev;
 	struct urdev *urd;
 
-	sprintf(bus_id, "0.0.%04x", devno);
+	scnprintf(bus_id, sizeof(bus_id), "0.0.%04x", devno);
 	cdev = get_ccwdev_by_busid(&ur_driver, bus_id);
 	if (!cdev)
 		return NULL;
@@ -904,11 +904,11 @@ static int ur_set_online(struct ccw_device *cdev)
 		goto fail_free_cdev;
 	if (urd->cdev->id.cu_type == READER_PUNCH_DEVTYPE) {
 		if (urd->class == DEV_CLASS_UR_I)
-			sprintf(node_id, "vmrdr-%s", dev_name(&cdev->dev));
+			scnprintf(node_id, sizeof(node_id), "vmrdr-%s", dev_name(&cdev->dev));
 		if (urd->class == DEV_CLASS_UR_O)
-			sprintf(node_id, "vmpun-%s", dev_name(&cdev->dev));
+			scnprintf(node_id, sizeof(node_id), "vmpun-%s", dev_name(&cdev->dev));
 	} else if (urd->cdev->id.cu_type == PRINTER_DEVTYPE) {
-		sprintf(node_id, "vmprt-%s", dev_name(&cdev->dev));
+		scnprintf(node_id, sizeof(node_id), "vmprt-%s", dev_name(&cdev->dev));
 	} else {
 		rc = -EOPNOTSUPP;
 		goto fail_free_cdev;
@@ -1009,7 +1009,7 @@ static int __init ur_init(void)
 	int rc;
 	dev_t dev;
 
-	if (!MACHINE_IS_VM) {
+	if (!machine_is_vm()) {
 		pr_err("The %s cannot be loaded without z/VM\n",
 		       ur_banner);
 		return -ENODEV;

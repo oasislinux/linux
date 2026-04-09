@@ -29,6 +29,7 @@
 #include "xfs_inode.h"
 #include "xfs_rtbitmap.h"
 #include "xfs_rtgroup.h"
+#include "xfs_zone_alloc.h"
 
 struct kmem_cache	*xfs_efi_cache;
 struct kmem_cache	*xfs_efd_cache;
@@ -80,6 +81,11 @@ xfs_efi_item_size(
 
 	*nvecs += 1;
 	*nbytes += xfs_efi_log_format_sizeof(efip->efi_format.efi_nextents);
+}
+
+unsigned int xfs_efi_log_space(unsigned int nr)
+{
+	return xlog_item_space(1, xfs_efi_log_format_sizeof(nr));
 }
 
 /*
@@ -176,15 +182,18 @@ xfs_efi_init(
  * It will handle the conversion of formats if necessary.
  */
 STATIC int
-xfs_efi_copy_format(xfs_log_iovec_t *buf, xfs_efi_log_format_t *dst_efi_fmt)
+xfs_efi_copy_format(
+	struct kvec			*buf,
+	struct xfs_efi_log_format	*dst_efi_fmt)
 {
-	xfs_efi_log_format_t *src_efi_fmt = buf->i_addr;
-	uint i;
-	uint len = xfs_efi_log_format_sizeof(src_efi_fmt->efi_nextents);
-	uint len32 = xfs_efi_log_format32_sizeof(src_efi_fmt->efi_nextents);
-	uint len64 = xfs_efi_log_format64_sizeof(src_efi_fmt->efi_nextents);
+	struct xfs_efi_log_format	*src_efi_fmt = buf->iov_base;
+	uint				len, len32, len64, i;
 
-	if (buf->i_len == len) {
+	len = xfs_efi_log_format_sizeof(src_efi_fmt->efi_nextents);
+	len32 = xfs_efi_log_format32_sizeof(src_efi_fmt->efi_nextents);
+	len64 = xfs_efi_log_format64_sizeof(src_efi_fmt->efi_nextents);
+
+	if (buf->iov_len == len) {
 		memcpy(dst_efi_fmt, src_efi_fmt,
 		       offsetof(struct xfs_efi_log_format, efi_extents));
 		for (i = 0; i < src_efi_fmt->efi_nextents; i++)
@@ -192,8 +201,8 @@ xfs_efi_copy_format(xfs_log_iovec_t *buf, xfs_efi_log_format_t *dst_efi_fmt)
 			       &src_efi_fmt->efi_extents[i],
 			       sizeof(struct xfs_extent));
 		return 0;
-	} else if (buf->i_len == len32) {
-		xfs_efi_log_format_32_t *src_efi_fmt_32 = buf->i_addr;
+	} else if (buf->iov_len == len32) {
+		struct xfs_efi_log_format_32 *src_efi_fmt_32 = buf->iov_base;
 
 		dst_efi_fmt->efi_type     = src_efi_fmt_32->efi_type;
 		dst_efi_fmt->efi_size     = src_efi_fmt_32->efi_size;
@@ -206,8 +215,8 @@ xfs_efi_copy_format(xfs_log_iovec_t *buf, xfs_efi_log_format_t *dst_efi_fmt)
 				src_efi_fmt_32->efi_extents[i].ext_len;
 		}
 		return 0;
-	} else if (buf->i_len == len64) {
-		xfs_efi_log_format_64_t *src_efi_fmt_64 = buf->i_addr;
+	} else if (buf->iov_len == len64) {
+		struct xfs_efi_log_format_64 *src_efi_fmt_64 = buf->iov_base;
 
 		dst_efi_fmt->efi_type     = src_efi_fmt_64->efi_type;
 		dst_efi_fmt->efi_size     = src_efi_fmt_64->efi_size;
@@ -221,8 +230,8 @@ xfs_efi_copy_format(xfs_log_iovec_t *buf, xfs_efi_log_format_t *dst_efi_fmt)
 		}
 		return 0;
 	}
-	XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, NULL, buf->i_addr,
-			buf->i_len);
+	XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, NULL, buf->iov_base,
+			buf->iov_len);
 	return -EFSCORRUPTED;
 }
 
@@ -251,6 +260,11 @@ xfs_efd_item_size(
 
 	*nvecs += 1;
 	*nbytes += xfs_efd_log_format_sizeof(efdp->efd_format.efd_nextents);
+}
+
+unsigned int xfs_efd_log_space(unsigned int nr)
+{
+	return xlog_item_space(1, xfs_efd_log_format_sizeof(nr));
 }
 
 /*
@@ -767,21 +781,35 @@ xfs_rtextent_free_finish_item(
 
 	trace_xfs_extent_free_deferred(mp, xefi);
 
-	if (!(xefi->xefi_flags & XFS_EFI_CANCELLED)) {
-		if (*rtgp != to_rtg(xefi->xefi_group)) {
-			*rtgp = to_rtg(xefi->xefi_group);
-			xfs_rtgroup_lock(*rtgp, XFS_RTGLOCK_BITMAP);
-			xfs_rtgroup_trans_join(tp, *rtgp,
-					XFS_RTGLOCK_BITMAP);
-		}
-		error = xfs_rtfree_blocks(tp, *rtgp,
-				xefi->xefi_startblock, xefi->xefi_blockcount);
+	if (xefi->xefi_flags & XFS_EFI_CANCELLED)
+		goto done;
+
+	if (*rtgp != to_rtg(xefi->xefi_group)) {
+		unsigned int		lock_flags;
+
+		if (xfs_has_zoned(mp))
+			lock_flags = XFS_RTGLOCK_RMAP;
+		else
+			lock_flags = XFS_RTGLOCK_BITMAP;
+
+		*rtgp = to_rtg(xefi->xefi_group);
+		xfs_rtgroup_lock(*rtgp, lock_flags);
+		xfs_rtgroup_trans_join(tp, *rtgp, lock_flags);
 	}
+
+	if (xfs_has_zoned(mp)) {
+		error = xfs_zone_free_blocks(tp, *rtgp, xefi->xefi_startblock,
+				xefi->xefi_blockcount);
+	} else {
+		error = xfs_rtfree_blocks(tp, *rtgp, xefi->xefi_startblock,
+				xefi->xefi_blockcount);
+	}
+
 	if (error == -EAGAIN) {
 		xfs_efd_from_efi(efdp);
 		return error;
 	}
-
+done:
 	xfs_efd_add_extent(efdp, xefi);
 	xfs_extent_free_cancel_item(item);
 	return error;
@@ -840,11 +868,11 @@ xlog_recover_efi_commit_pass2(
 	struct xfs_efi_log_format	*efi_formatp;
 	int				error;
 
-	efi_formatp = item->ri_buf[0].i_addr;
+	efi_formatp = item->ri_buf[0].iov_base;
 
-	if (item->ri_buf[0].i_len < xfs_efi_log_format_sizeof(0)) {
+	if (item->ri_buf[0].iov_len < xfs_efi_log_format_sizeof(0)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
@@ -879,11 +907,11 @@ xlog_recover_rtefi_commit_pass2(
 	struct xfs_efi_log_format	*efi_formatp;
 	int				error;
 
-	efi_formatp = item->ri_buf[0].i_addr;
+	efi_formatp = item->ri_buf[0].iov_base;
 
-	if (item->ri_buf[0].i_len < xfs_efi_log_format_sizeof(0)) {
+	if (item->ri_buf[0].iov_len < xfs_efi_log_format_sizeof(0)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
@@ -908,7 +936,7 @@ xlog_recover_rtefi_commit_pass2(
 	xfs_lsn_t			lsn)
 {
 	XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
-			item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+			item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 	return -EFSCORRUPTED;
 }
 #endif
@@ -933,9 +961,9 @@ xlog_recover_efd_commit_pass2(
 	xfs_lsn_t			lsn)
 {
 	struct xfs_efd_log_format	*efd_formatp;
-	int				buflen = item->ri_buf[0].i_len;
+	int				buflen = item->ri_buf[0].iov_len;
 
-	efd_formatp = item->ri_buf[0].i_addr;
+	efd_formatp = item->ri_buf[0].iov_base;
 
 	if (buflen < sizeof(struct xfs_efd_log_format)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
@@ -943,9 +971,9 @@ xlog_recover_efd_commit_pass2(
 		return -EFSCORRUPTED;
 	}
 
-	if (item->ri_buf[0].i_len != xfs_efd_log_format32_sizeof(
+	if (item->ri_buf[0].iov_len != xfs_efd_log_format32_sizeof(
 						efd_formatp->efd_nextents) &&
-	    item->ri_buf[0].i_len != xfs_efd_log_format64_sizeof(
+	    item->ri_buf[0].iov_len != xfs_efd_log_format64_sizeof(
 						efd_formatp->efd_nextents)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
 				efd_formatp, buflen);
@@ -970,9 +998,9 @@ xlog_recover_rtefd_commit_pass2(
 	xfs_lsn_t			lsn)
 {
 	struct xfs_efd_log_format	*efd_formatp;
-	int				buflen = item->ri_buf[0].i_len;
+	int				buflen = item->ri_buf[0].iov_len;
 
-	efd_formatp = item->ri_buf[0].i_addr;
+	efd_formatp = item->ri_buf[0].iov_base;
 
 	if (buflen < sizeof(struct xfs_efd_log_format)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
@@ -980,9 +1008,9 @@ xlog_recover_rtefd_commit_pass2(
 		return -EFSCORRUPTED;
 	}
 
-	if (item->ri_buf[0].i_len != xfs_efd_log_format32_sizeof(
+	if (item->ri_buf[0].iov_len != xfs_efd_log_format32_sizeof(
 						efd_formatp->efd_nextents) &&
-	    item->ri_buf[0].i_len != xfs_efd_log_format64_sizeof(
+	    item->ri_buf[0].iov_len != xfs_efd_log_format64_sizeof(
 						efd_formatp->efd_nextents)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
 				efd_formatp, buflen);

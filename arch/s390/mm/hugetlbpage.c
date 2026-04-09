@@ -6,15 +6,15 @@
  *    Author(s): Gerald Schaefer <gerald.schaefer@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "hugetlb"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "hugetlb: " fmt
 
-#include <asm/pgalloc.h>
+#include <linux/cpufeature.h>
 #include <linux/mm.h>
 #include <linux/hugetlb.h>
 #include <linux/mman.h>
 #include <linux/sched/mm.h>
 #include <linux/security.h>
+#include <asm/pgalloc.h>
 
 /*
  * If the bit selected by single-bit bitmask "a" is set within "x", move
@@ -154,7 +154,7 @@ static void clear_huge_pte_skeys(struct mm_struct *mm, unsigned long rste)
 		paddr = rste & PMD_MASK;
 	}
 
-	if (!test_and_set_bit(PG_arch_1, &folio->flags))
+	if (!test_and_set_bit(PG_arch_1, &folio->flags.f))
 		__storage_key_init_range(paddr, paddr + size);
 }
 
@@ -248,9 +248,9 @@ pte_t *huge_pte_offset(struct mm_struct *mm,
 
 bool __init arch_hugetlb_valid_size(unsigned long size)
 {
-	if (MACHINE_HAS_EDAT1 && size == PMD_SIZE)
+	if (cpu_has_edat1() && size == PMD_SIZE)
 		return true;
-	else if (MACHINE_HAS_EDAT2 && size == PUD_SIZE)
+	else if (cpu_has_edat2() && size == PUD_SIZE)
 		return true;
 	else
 		return false;

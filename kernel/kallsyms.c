@@ -103,8 +103,11 @@ static char kallsyms_get_symbol_type(unsigned int off)
 {
 	/*
 	 * Get just the first code, look it up in the token table,
-	 * and return the first char from this token.
+	 * and return the first char from this token. If MSB of length
+	 * is 1, it is a "big" symbol, so needs an additional byte.
 	 */
+	if (kallsyms_names[off] & 0x80)
+		off++;
 	return kallsyms_token_table[kallsyms_token_index[kallsyms_names[off + 1]]];
 }
 
@@ -148,16 +151,8 @@ static unsigned int get_symbol_offset(unsigned long pos)
 
 unsigned long kallsyms_sym_address(int idx)
 {
-	/* values are unsigned offsets if --absolute-percpu is not in effect */
-	if (!IS_ENABLED(CONFIG_KALLSYMS_ABSOLUTE_PERCPU))
-		return kallsyms_relative_base + (u32)kallsyms_offsets[idx];
-
-	/* ...otherwise, positive offsets are absolute values */
-	if (kallsyms_offsets[idx] >= 0)
-		return kallsyms_offsets[idx];
-
-	/* ...and negative offsets are relative to kallsyms_relative_base - 1 */
-	return kallsyms_relative_base - 1 - kallsyms_offsets[idx];
+	/* values are unsigned offsets */
+	return kallsyms_relative_base + (u32)kallsyms_offsets[idx];
 }
 
 static unsigned int get_symbol_seq(int index)
@@ -837,8 +832,7 @@ static struct bpf_iter_reg ksym_iter_reg_info = {
 	.seq_info		= &ksym_iter_seq_info,
 };
 
-BTF_ID_LIST(btf_ksym_iter_id)
-BTF_ID(struct, kallsym_iter)
+BTF_ID_LIST_SINGLE(btf_ksym_iter_id, struct, kallsym_iter)
 
 static int __init bpf_ksym_iter_register(void)
 {

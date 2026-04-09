@@ -44,7 +44,9 @@ Devices and I/O
    :maxdepth: 1
 
    accelerators/ocxl
+   dma-buf-heaps
    dma-buf-alloc-exchange
+   fwctl/index
    gpio/index
    iommufd
    media/index
@@ -59,6 +61,7 @@ Everything else
    :maxdepth: 1
 
    ELF
+   liveupdate
    netlink/index
    sysfs-platform_profile
    vduse

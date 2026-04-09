@@ -14,9 +14,9 @@
 #include <sys/mman.h>
 #include <linux/stringify.h>
 
-#include "build-id.h"
 #include "event.h"
 #include "debug.h"
+#include "dso.h"
 #include "evlist.h"
 #include "namespaces.h"
 #include "symbol.h"
@@ -233,7 +233,8 @@ jit_open(struct jit_buf_desc *jd, const char *name)
 	/*
 	 * keep dirname for generating files and mmap records
 	 */
-	strcpy(jd->dir, name);
+	strncpy(jd->dir, name, PATH_MAX);
+	jd->dir[PATH_MAX - 1] = '\0';
 	dirname(jd->dir);
 	free(buf);
 
@@ -516,7 +517,7 @@ static int jit_repipe_code_load(struct jit_buf_desc *jd, union jr_entry *jr)
 	 * create pseudo sample to induce dso hit increment
 	 * use first address as sample address
 	 */
-	memset(&sample, 0, sizeof(sample));
+	perf_sample__init(&sample, /*all=*/true);
 	sample.cpumode = PERF_RECORD_MISC_USER;
 	sample.pid  = pid;
 	sample.tid  = tid;
@@ -531,10 +532,26 @@ static int jit_repipe_code_load(struct jit_buf_desc *jd, union jr_entry *jr)
 	/*
 	 * mark dso as use to generate buildid in the header
 	 */
-	if (!ret)
-		build_id__mark_dso_hit(tool, event, &sample, NULL, jd->machine);
+	if (!ret) {
+		struct dso_id dso_id = {
+			{
+				.maj = event->mmap2.maj,
+				.min = event->mmap2.min,
+				.ino = event->mmap2.ino,
+				.ino_generation = event->mmap2.ino_generation,
+			},
+			.mmap2_valid = true,
+			.mmap2_ino_generation_valid = true,
+		};
+		struct dso *dso = machine__findnew_dso_id(jd->machine, filename, &dso_id);
 
+		if (dso)
+			dso__set_hit(dso);
+
+		dso__put(dso);
+	}
 out:
+	perf_sample__exit(&sample);
 	free(event);
 	return ret;
 }
@@ -611,7 +628,7 @@ static int jit_repipe_code_move(struct jit_buf_desc *jd, union jr_entry *jr)
 	 * create pseudo sample to induce dso hit increment
 	 * use first address as sample address
 	 */
-	memset(&sample, 0, sizeof(sample));
+	perf_sample__init(&sample, /*all=*/true);
 	sample.cpumode = PERF_RECORD_MISC_USER;
 	sample.pid  = pid;
 	sample.tid  = tid;
@@ -620,12 +637,13 @@ static int jit_repipe_code_move(struct jit_buf_desc *jd, union jr_entry *jr)
 
 	ret = perf_event__process_mmap2(tool, event, &sample, jd->machine);
 	if (ret)
-		return ret;
+		goto out;
 
 	ret = jit_inject_event(jd, event);
 	if (!ret)
 		build_id__mark_dso_hit(tool, event, &sample, NULL, jd->machine);
-
+out:
+	perf_sample__exit(&sample);
 	return ret;
 }
 

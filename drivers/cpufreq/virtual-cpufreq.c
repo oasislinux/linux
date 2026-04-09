@@ -138,7 +138,7 @@ static int virt_cpufreq_get_sharing_cpus(struct cpufreq_policy *policy)
 	cur_perf_domain = readl_relaxed(base + policy->cpu *
 					PER_CPU_OFFSET + REG_PERF_DOMAIN_OFFSET);
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		cpu_dev = get_cpu_device(cpu);
 		if (!cpu_dev)
 			continue;
@@ -250,7 +250,7 @@ static int virt_cpufreq_offline(struct cpufreq_policy *policy)
 static int virt_cpufreq_verify_policy(struct cpufreq_policy_data *policy)
 {
 	if (policy->freq_table)
-		return cpufreq_frequency_table_verify(policy, policy->freq_table);
+		return cpufreq_frequency_table_verify(policy);
 
 	cpufreq_verify_within_cpu_limits(policy);
 	return 0;
@@ -265,7 +265,6 @@ static struct cpufreq_driver cpufreq_virt_driver = {
 	.verify		= virt_cpufreq_verify_policy,
 	.target		= virt_cpufreq_target,
 	.fast_switch	= virt_cpufreq_fast_switch,
-	.attr		= cpufreq_generic_attr,
 };
 
 static int virt_cpufreq_driver_probe(struct platform_device *pdev)

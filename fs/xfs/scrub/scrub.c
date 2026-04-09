@@ -399,12 +399,14 @@ static const struct xchk_meta_ops meta_scrub_ops[] = {
 	},
 	[XFS_SCRUB_TYPE_RTBITMAP] = {	/* realtime bitmap */
 		.type	= ST_RTGROUP,
+		.has	= xfs_has_nonzoned,
 		.setup	= xchk_setup_rtbitmap,
 		.scrub	= xchk_rtbitmap,
 		.repair	= xrep_rtbitmap,
 	},
 	[XFS_SCRUB_TYPE_RTSUM] = {	/* realtime summary */
 		.type	= ST_RTGROUP,
+		.has	= xfs_has_nonzoned,
 		.setup	= xchk_setup_rtsummary,
 		.scrub	= xchk_rtsummary,
 		.repair	= xrep_rtsummary,
@@ -678,8 +680,6 @@ xfs_scrub_metadata(
 	if (error)
 		goto out;
 
-	xfs_warn_experimental(mp, XFS_EXPERIMENTAL_SCRUB);
-
 	sc = kzalloc(sizeof(struct xfs_scrub), XCHK_GFP_FLAGS);
 	if (!sc) {
 		error = -ENOMEM;
@@ -876,10 +876,7 @@ xchk_scrubv_open_by_handle(
 	struct xfs_inode		*ip;
 	int				error;
 
-	error = xfs_trans_alloc_empty(mp, &tp);
-	if (error)
-		return NULL;
-
+	tp = xfs_trans_alloc_empty(mp);
 	error = xfs_iget(mp, tp, head->svh_ino, XCHK_IGET_FLAGS, 0, &ip);
 	xfs_trans_cancel(tp);
 	if (error)

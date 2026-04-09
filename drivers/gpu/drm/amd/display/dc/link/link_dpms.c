@@ -140,7 +140,8 @@ void link_blank_dp_stream(struct dc_link *link, bool hw_init)
 				}
 		}
 
-		if ((!link->wa_flags.dp_keep_receiver_powered) || hw_init)
+		if (((!dc->is_switch_in_progress_dest) && ((!link->wa_flags.dp_keep_receiver_powered) || hw_init)) &&
+			(link->type != dc_connection_none))
 			dpcd_write_rx_power_ctrl(link, false);
 	}
 }
@@ -148,6 +149,7 @@ void link_blank_dp_stream(struct dc_link *link, bool hw_init)
 void link_set_all_streams_dpms_off_for_link(struct dc_link *link)
 {
 	struct pipe_ctx *pipes[MAX_PIPES];
+	struct dc_stream_state *streams[MAX_PIPES];
 	struct dc_state *state = link->dc->current_state;
 	uint8_t count;
 	int i;
@@ -160,10 +162,18 @@ void link_set_all_streams_dpms_off_for_link(struct dc_link *link)
 
 	link_get_master_pipes_with_dpms_on(link, state, &count, pipes);
 
+	/* The subsequent call to dc_commit_updates_for_stream for a full update
+	 * will release the current state and swap to a new state. Releasing the
+	 * current state results in the stream pointers in the pipe_ctx structs
+	 * to be zero'd. Hence, cache all streams prior to dc_commit_updates_for_stream.
+	 */
+	for (i = 0; i < count; i++)
+		streams[i] = pipes[i]->stream;
+
 	for (i = 0; i < count; i++) {
-		stream_update.stream = pipes[i]->stream;
+		stream_update.stream = streams[i];
 		dc_commit_updates_for_stream(link->ctx->dc, NULL, 0,
-				pipes[i]->stream, &stream_update,
+				streams[i], &stream_update,
 				state);
 	}
 
@@ -652,15 +662,15 @@ static void write_i2c_redriver_setting(
 static void update_psp_stream_config(struct pipe_ctx *pipe_ctx, bool dpms_off)
 {
 	struct cp_psp *cp_psp = &pipe_ctx->stream->ctx->cp_psp;
-	struct link_encoder *link_enc = NULL;
+	struct link_encoder *link_enc = pipe_ctx->link_res.dio_link_enc;
 	struct cp_psp_stream_config config = {0};
 	enum dp_panel_mode panel_mode =
 			dp_get_panel_mode(pipe_ctx->stream->link);
 
 	if (cp_psp == NULL || cp_psp->funcs.update_stream_config == NULL)
 		return;
-
-	link_enc = link_enc_cfg_get_link_enc(pipe_ctx->stream->link);
+	if (!pipe_ctx->stream->ctx->dc->config.unify_link_enc_assignment)
+		link_enc = link_enc_cfg_get_link_enc(pipe_ctx->stream->link);
 	ASSERT(link_enc);
 	if (link_enc == NULL)
 		return;
@@ -822,7 +832,7 @@ void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 		enum optc_dsc_mode optc_dsc_mode;
 
 		/* Enable DSC hw block */
-		dsc_cfg.pic_width = (stream->timing.h_addressable + pipe_ctx->hblank_borrow +
+		dsc_cfg.pic_width = (stream->timing.h_addressable + pipe_ctx->dsc_padding_params.dsc_hactive_padding +
 				stream->timing.h_border_left + stream->timing.h_border_right) / opp_cnt;
 		dsc_cfg.pic_height = stream->timing.v_addressable + stream->timing.v_border_top + stream->timing.v_border_bottom;
 		dsc_cfg.pixel_encoding = stream->timing.pixel_encoding;
@@ -831,16 +841,17 @@ void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 		dsc_cfg.dc_dsc_cfg = stream->timing.dsc_cfg;
 		ASSERT(dsc_cfg.dc_dsc_cfg.num_slices_h % opp_cnt == 0);
 		dsc_cfg.dc_dsc_cfg.num_slices_h /= opp_cnt;
+		dsc_cfg.dsc_padding = pipe_ctx->dsc_padding_params.dsc_hactive_padding;
 
 		if (should_use_dto_dscclk)
-			dccg->funcs->set_dto_dscclk(dccg, dsc->inst);
+			dccg->funcs->set_dto_dscclk(dccg, dsc->inst, dsc_cfg.dc_dsc_cfg.num_slices_h);
 		dsc->funcs->dsc_set_config(dsc, &dsc_cfg, &dsc_optc_cfg);
 		dsc->funcs->dsc_enable(dsc, pipe_ctx->stream_res.opp->inst);
 		for (odm_pipe = pipe_ctx->next_odm_pipe; odm_pipe; odm_pipe = odm_pipe->next_odm_pipe) {
 			struct display_stream_compressor *odm_dsc = odm_pipe->stream_res.dsc;
 
 			if (should_use_dto_dscclk)
-				dccg->funcs->set_dto_dscclk(dccg, odm_dsc->inst);
+				dccg->funcs->set_dto_dscclk(dccg, odm_dsc->inst, dsc_cfg.dc_dsc_cfg.num_slices_h);
 			odm_dsc->funcs->dsc_set_config(odm_dsc, &dsc_cfg, &dsc_optc_cfg);
 			odm_dsc->funcs->dsc_enable(odm_dsc, odm_pipe->stream_res.opp->inst);
 		}
@@ -960,6 +971,7 @@ bool link_set_dsc_pps_packet(struct pipe_ctx *pipe_ctx, bool enable, bool immedi
 		dsc_cfg.color_depth = stream->timing.display_color_depth;
 		dsc_cfg.is_odm = pipe_ctx->next_odm_pipe ? true : false;
 		dsc_cfg.dc_dsc_cfg = stream->timing.dsc_cfg;
+		dsc_cfg.dsc_padding = pipe_ctx->dsc_padding_params.dsc_hactive_padding;
 
 		dsc->funcs->dsc_get_packed_pps(dsc, &dsc_cfg, &dsc_packed_pps[0]);
 		memcpy(&stream->dsc_packed_pps[0], &dsc_packed_pps[0], sizeof(stream->dsc_packed_pps));
@@ -1924,7 +1936,7 @@ static void disable_link_dp(struct dc_link *link,
 
 	if (link_dp_get_encoding_format(&link_settings) ==
 			DP_8b_10b_ENCODING) {
-		dp_set_fec_enable(link, false);
+		dp_set_fec_enable(link, link_res, false);
 		dp_set_fec_ready(link, link_res, false);
 	}
 }
@@ -2122,7 +2134,7 @@ static enum dc_status enable_link_dp(struct dc_state *state,
 		fec_enable = true;
 
 	if (link_dp_get_encoding_format(link_settings) == DP_8b_10b_ENCODING)
-		dp_set_fec_enable(link, fec_enable);
+		dp_set_fec_enable(link, &pipe_ctx->link_res, fec_enable);
 
 	// during mode set we do DP_SET_POWER off then on, aux writes are lost
 	if (link->dpcd_sink_ext_caps.bits.oled == 1 ||
@@ -2214,7 +2226,11 @@ static enum dc_status enable_link(
 {
 	enum dc_status status = DC_ERROR_UNEXPECTED;
 	struct dc_stream_state *stream = pipe_ctx->stream;
-	struct dc_link *link = stream->link;
+	struct dc_link *link = NULL;
+
+	if (stream == NULL)
+		return DC_ERROR_UNEXPECTED;
+	link = stream->link;
 
 	/* There's some scenarios where driver is unloaded with display
 	 * still enabled. When driver is reloaded, it may cause a display
@@ -2244,6 +2260,9 @@ static enum dc_status enable_link(
 		break;
 	case SIGNAL_TYPE_LVDS:
 		enable_link_lvds(pipe_ctx);
+		status = DC_OK;
+		break;
+	case SIGNAL_TYPE_RGB:
 		status = DC_OK;
 		break;
 	case SIGNAL_TYPE_VIRTUAL:
@@ -2287,26 +2306,10 @@ static bool allocate_usb4_bandwidth_for_stream(struct dc_stream_state *stream, i
 		link->dpia_bw_alloc_config.remote_sink_req_bw[sink_index] = bw;
 	}
 
-	/* get dp overhead for dp tunneling */
-	link->dpia_bw_alloc_config.dp_overhead = link_dp_dpia_get_dp_overhead_in_dp_tunneling(link);
+	link->dpia_bw_alloc_config.dp_overhead = link_dpia_get_dp_overhead(link);
 	req_bw += link->dpia_bw_alloc_config.dp_overhead;
 
-	if (link_dp_dpia_allocate_usb4_bandwidth_for_stream(link, req_bw)) {
-		if (req_bw <= link->dpia_bw_alloc_config.allocated_bw) {
-			DC_LOG_DEBUG("%s, Success in allocate bw for link(%d), allocated_bw(%d), dp_overhead(%d)\n",
-					__func__, link->link_index, link->dpia_bw_alloc_config.allocated_bw,
-					link->dpia_bw_alloc_config.dp_overhead);
-		} else {
-			// Cannot get the required bandwidth.
-			DC_LOG_ERROR("%s, Failed to allocate bw for link(%d), allocated_bw(%d), dp_overhead(%d)\n",
-					__func__, link->link_index, link->dpia_bw_alloc_config.allocated_bw,
-					link->dpia_bw_alloc_config.dp_overhead);
-			return false;
-		}
-	} else {
-		DC_LOG_DEBUG("%s, usb4 request bw timeout\n", __func__);
-		return false;
-	}
+	link_dp_dpia_allocate_usb4_bandwidth_for_stream(link, req_bw);
 
 	if (stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST) {
 		int i = 0;
@@ -2364,9 +2367,9 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 	if (pipe_ctx->stream->sink) {
 		if (pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_VIRTUAL &&
 			pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_NONE) {
-			DC_LOG_DC("%s pipe_ctx dispname=%s signal=%x\n", __func__,
+			DC_LOG_DC("%s pipe_ctx dispname=%s signal=%x link=%d\n", __func__,
 			pipe_ctx->stream->sink->edid_caps.display_name,
-			pipe_ctx->stream->signal);
+			pipe_ctx->stream->signal, link->link_index);
 		}
 	}
 
@@ -2380,7 +2383,7 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 	update_psp_stream_config(pipe_ctx, true);
 	dc->hwss.blank_stream(pipe_ctx);
 
-	if (pipe_ctx->stream->link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA)
+	if (pipe_ctx->link_config.dp_tunnel_settings.should_use_dp_bw_allocation)
 		deallocate_usb4_bandwidth(pipe_ctx->stream);
 
 	if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST)
@@ -2448,7 +2451,7 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 	if (link->connector_signal == SIGNAL_TYPE_EDP && dc->debug.psp_disabled_wa) {
 		/* reset internal save state to default since eDP is  off */
 		enum dp_panel_mode panel_mode = dp_get_panel_mode(pipe_ctx->stream->link);
-		/* since current psp not loaded, we need to reset it to default*/
+		/* since current psp not loaded, we need to reset it to default */
 		link->panel_mode = panel_mode;
 	}
 }
@@ -2461,7 +2464,7 @@ void link_set_dpms_on(
 	struct dc_stream_state *stream = pipe_ctx->stream;
 	struct dc_link *link = stream->sink->link;
 	enum dc_status status;
-	struct link_encoder *link_enc;
+	struct link_encoder *link_enc = pipe_ctx->link_res.dio_link_enc;
 	enum otg_out_mux_dest otg_out_dest = OUT_MUX_DIO;
 	struct vpg *vpg = pipe_ctx->stream_res.stream_enc->vpg;
 	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
@@ -2480,13 +2483,15 @@ void link_set_dpms_on(
 	if (pipe_ctx->stream->sink) {
 		if (pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_VIRTUAL &&
 			pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_NONE) {
-			DC_LOG_DC("%s pipe_ctx dispname=%s signal=%x\n", __func__,
+			DC_LOG_DC("%s pipe_ctx dispname=%s signal=%x link=%d\n", __func__,
 			pipe_ctx->stream->sink->edid_caps.display_name,
-			pipe_ctx->stream->signal);
+			pipe_ctx->stream->signal,
+			link->link_index);
 		}
 	}
 
-	link_enc = link_enc_cfg_get_link_enc(link);
+	if (!dc->config.unify_link_enc_assignment)
+		link_enc = link_enc_cfg_get_link_enc(link);
 	ASSERT(link_enc);
 
 	if (!dc_is_virtual_signal(pipe_ctx->stream->signal)
@@ -2542,6 +2547,14 @@ void link_set_dpms_on(
 				!pipe_ctx->next_odm_pipe) {
 		pipe_ctx->stream->dpms_off = false;
 		update_psp_stream_config(pipe_ctx, false);
+
+		if (link->is_dds) {
+			uint32_t post_oui_delay = 30; // 30ms
+
+			dpcd_set_source_specific_data(link);
+			msleep(post_oui_delay);
+		}
+
 		return;
 	}
 
@@ -2625,7 +2638,7 @@ void link_set_dpms_on(
 	if (dc_is_dp_signal(pipe_ctx->stream->signal))
 		dp_set_hblank_reduction_on_rx(pipe_ctx);
 
-	if (pipe_ctx->stream->link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA)
+	if (pipe_ctx->link_config.dp_tunnel_settings.should_use_dp_bw_allocation)
 		allocate_usb4_bandwidth(pipe_ctx->stream);
 
 	if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST)
@@ -2633,6 +2646,15 @@ void link_set_dpms_on(
 	else if (dc_is_dp_sst_signal(pipe_ctx->stream->signal) &&
 			dp_is_128b_132b_signal(pipe_ctx))
 		update_sst_payload(pipe_ctx, true);
+
+	/* Corruption was observed on systems with display mux when stream gets
+	 * enabled after the mux switch. Having a small delay between link
+	 * training and stream unblank resolves the corruption issue.
+	 * This is workaround.
+	 */
+	if (pipe_ctx->stream->signal == SIGNAL_TYPE_EDP &&
+			link->is_display_mux_present)
+		msleep(20);
 
 	dc->hwss.unblank_stream(pipe_ctx,
 		&pipe_ctx->stream->link->cur_link_settings);

@@ -7,8 +7,7 @@
  * Author(s): Melissa Howland <Melissa.Howland@us.ibm.com>
  */
 
-#define KMSG_COMPONENT "monwriter"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "monwriter: " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -23,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
+#include <asm/machine.h>
 #include <asm/ebcdic.h>
 #include <asm/appldata.h>
 #include <asm/monwriter.h>
@@ -293,7 +293,7 @@ static struct miscdevice mon_dev = {
 
 static int __init mon_init(void)
 {
-	if (!MACHINE_IS_VM)
+	if (!machine_is_vm())
 		return -ENODEV;
 	/*
 	 * misc_register() has to be the last action in module_init(), because

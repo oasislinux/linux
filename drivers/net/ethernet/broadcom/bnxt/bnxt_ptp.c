@@ -15,7 +15,7 @@
 #include <linux/timekeeping.h>
 #include <linux/ptp_classify.h>
 #include <linux/clocksource.h>
-#include "bnxt_hsi.h"
+#include <linux/bnxt/hsi.h>
 #include "bnxt.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ptp.h"
@@ -560,10 +560,11 @@ static int bnxt_hwrm_ptp_cfg(struct bnxt *bp)
 	return bnxt_ptp_cfg_tstamp_filters(bp);
 }
 
-int bnxt_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
+int bnxt_hwtstamp_set(struct net_device *dev,
+		      struct kernel_hwtstamp_config *stmpconf,
+		      struct netlink_ext_ack *extack)
 {
 	struct bnxt *bp = netdev_priv(dev);
-	struct hwtstamp_config stmpconf;
 	struct bnxt_ptp_cfg *ptp;
 	u16 old_rxctl;
 	int old_rx_filter, rc;
@@ -573,17 +574,14 @@ int bnxt_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
 	if (!ptp)
 		return -EOPNOTSUPP;
 
-	if (copy_from_user(&stmpconf, ifr->ifr_data, sizeof(stmpconf)))
-		return -EFAULT;
-
-	if (stmpconf.tx_type != HWTSTAMP_TX_ON &&
-	    stmpconf.tx_type != HWTSTAMP_TX_OFF)
+	if (stmpconf->tx_type != HWTSTAMP_TX_ON &&
+	    stmpconf->tx_type != HWTSTAMP_TX_OFF)
 		return -ERANGE;
 
 	old_rx_filter = ptp->rx_filter;
 	old_rxctl = ptp->rxctl;
 	old_tx_tstamp_en = ptp->tx_tstamp_en;
-	switch (stmpconf.rx_filter) {
+	switch (stmpconf->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		ptp->rxctl = 0;
 		ptp->rx_filter = HWTSTAMP_FILTER_NONE;
@@ -616,7 +614,7 @@ int bnxt_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
 		return -ERANGE;
 	}
 
-	if (stmpconf.tx_type == HWTSTAMP_TX_ON)
+	if (stmpconf->tx_type == HWTSTAMP_TX_ON)
 		ptp->tx_tstamp_en = 1;
 	else
 		ptp->tx_tstamp_en = 0;
@@ -625,9 +623,8 @@ int bnxt_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
 	if (rc)
 		goto ts_set_err;
 
-	stmpconf.rx_filter = ptp->rx_filter;
-	return copy_to_user(ifr->ifr_data, &stmpconf, sizeof(stmpconf)) ?
-		-EFAULT : 0;
+	stmpconf->rx_filter = ptp->rx_filter;
+	return 0;
 
 ts_set_err:
 	ptp->rx_filter = old_rx_filter;
@@ -636,22 +633,22 @@ ts_set_err:
 	return rc;
 }
 
-int bnxt_hwtstamp_get(struct net_device *dev, struct ifreq *ifr)
+int bnxt_hwtstamp_get(struct net_device *dev,
+		      struct kernel_hwtstamp_config *stmpconf)
 {
 	struct bnxt *bp = netdev_priv(dev);
-	struct hwtstamp_config stmpconf;
 	struct bnxt_ptp_cfg *ptp;
 
 	ptp = bp->ptp_cfg;
 	if (!ptp)
 		return -EOPNOTSUPP;
 
-	stmpconf.flags = 0;
-	stmpconf.tx_type = ptp->tx_tstamp_en ? HWTSTAMP_TX_ON : HWTSTAMP_TX_OFF;
+	stmpconf->flags = 0;
+	stmpconf->tx_type = ptp->tx_tstamp_en ? HWTSTAMP_TX_ON
+					      : HWTSTAMP_TX_OFF;
 
-	stmpconf.rx_filter = ptp->rx_filter;
-	return copy_to_user(ifr->ifr_data, &stmpconf, sizeof(stmpconf)) ?
-		-EFAULT : 0;
+	stmpconf->rx_filter = ptp->rx_filter;
+	return 0;
 }
 
 static int bnxt_map_regs(struct bnxt *bp, u32 *reg_arr, int count, int reg_win)
@@ -702,7 +699,7 @@ static void bnxt_unmap_ptp_regs(struct bnxt *bp)
 		  (BNXT_PTP_GRC_WIN - 1) * 4);
 }
 
-static u64 bnxt_cc_read(const struct cyclecounter *cc)
+static u64 bnxt_cc_read(struct cyclecounter *cc)
 {
 	struct bnxt_ptp_cfg *ptp = container_of(cc, struct bnxt_ptp_cfg, cc);
 	u64 ns = 0;
@@ -792,6 +789,27 @@ next_slot:
 	if (rc == -EAGAIN)
 		return 0;
 	return HZ;
+}
+
+void bnxt_ptp_free_txts_skbs(struct bnxt_ptp_cfg *ptp)
+{
+	struct bnxt_ptp_tx_req *txts_req;
+	u16 cons = ptp->txts_cons;
+
+	/* make sure ptp aux worker finished with
+	 * possible BNXT_STATE_OPEN set
+	 */
+	ptp_cancel_worker_sync(ptp->ptp_clock);
+
+	ptp->tx_avail = BNXT_MAX_TX_TS;
+	while (cons != ptp->txts_prod) {
+		txts_req = &ptp->txts_req[cons];
+		if (!IS_ERR_OR_NULL(txts_req->tx_skb))
+			dev_kfree_skb_any(txts_req->tx_skb);
+		cons = NEXT_TXTS(cons);
+	}
+	ptp->txts_cons = cons;
+	ptp_schedule_worker(ptp->ptp_clock, 0);
 }
 
 int bnxt_ptp_get_txts_prod(struct bnxt_ptp_cfg *ptp, u16 *prod)
@@ -934,7 +952,6 @@ static int bnxt_ptp_pps_init(struct bnxt *bp)
 		snprintf(ptp_info->pin_config[i].name,
 			 sizeof(ptp_info->pin_config[i].name), "bnxt_pps%d", i);
 		ptp_info->pin_config[i].index = i;
-		ptp_info->pin_config[i].chan = i;
 		if (*pin_usg == BNXT_PPS_PIN_PPS_IN)
 			ptp_info->pin_config[i].func = PTP_PF_EXTTS;
 		else if (*pin_usg == BNXT_PPS_PIN_PPS_OUT)
@@ -951,6 +968,8 @@ static int bnxt_ptp_pps_init(struct bnxt *bp)
 	ptp_info->n_per_out = 1;
 	ptp_info->pps = 1;
 	ptp_info->verify = bnxt_ptp_verify;
+	ptp_info->supported_extts_flags = PTP_RISING_EDGE | PTP_STRICT_FLAGS;
+	ptp_info->supported_perout_flags = PTP_PEROUT_DUTY_CYCLE;
 
 	return 0;
 }
@@ -1033,9 +1052,9 @@ static void bnxt_ptp_free(struct bnxt *bp)
 	if (ptp->ptp_clock) {
 		ptp_clock_unregister(ptp->ptp_clock);
 		ptp->ptp_clock = NULL;
-		kfree(ptp->ptp_info.pin_config);
-		ptp->ptp_info.pin_config = NULL;
 	}
+	kfree(ptp->ptp_info.pin_config);
+	ptp->ptp_info.pin_config = NULL;
 }
 
 int bnxt_ptp_init(struct bnxt *bp)
@@ -1105,7 +1124,6 @@ out:
 void bnxt_ptp_clear(struct bnxt *bp)
 {
 	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
-	int i;
 
 	if (!ptp)
 		return;
@@ -1116,13 +1134,6 @@ void bnxt_ptp_clear(struct bnxt *bp)
 	ptp->ptp_clock = NULL;
 	kfree(ptp->ptp_info.pin_config);
 	ptp->ptp_info.pin_config = NULL;
-
-	for (i = 0; i < BNXT_MAX_TX_TS; i++) {
-		if (ptp->txts_req[i].tx_skb) {
-			dev_kfree_skb_any(ptp->txts_req[i].tx_skb);
-			ptp->txts_req[i].tx_skb = NULL;
-		}
-	}
 
 	bnxt_unmap_ptp_regs(bp);
 }

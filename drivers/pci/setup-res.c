@@ -29,7 +29,7 @@ static void pci_std_update_resource(struct pci_dev *dev, int resno)
 	u16 cmd;
 	u32 new, check, mask;
 	int reg;
-	struct resource *res = dev->resource + resno;
+	struct resource *res = pci_resource_n(dev, resno);
 	const char *res_name = pci_resource_name(dev, resno);
 
 	/* Per SR-IOV spec 3.4.1.11, VF BARs are RO zero */
@@ -127,10 +127,8 @@ void pci_update_resource(struct pci_dev *dev, int resno)
 {
 	if (resno <= PCI_ROM_RESOURCE)
 		pci_std_update_resource(dev, resno);
-#ifdef CONFIG_PCI_IOV
-	else if (resno >= PCI_IOV_RESOURCES && resno <= PCI_IOV_RESOURCE_END)
+	else if (pci_resource_is_iov(resno))
 		pci_iov_update_resource(dev, resno);
-#endif
 }
 
 int pci_claim_resource(struct pci_dev *dev, int resource)
@@ -262,7 +260,7 @@ resource_size_t __weak pcibios_align_resource(void *data,
 static int __pci_assign_resource(struct pci_bus *bus, struct pci_dev *dev,
 		int resno, resource_size_t size, resource_size_t align)
 {
-	struct resource *res = dev->resource + resno;
+	struct resource *res = pci_resource_n(dev, resno);
 	resource_size_t min;
 	int ret;
 
@@ -325,7 +323,7 @@ static int _pci_assign_resource(struct pci_dev *dev, int resno,
 
 int pci_assign_resource(struct pci_dev *dev, int resno)
 {
-	struct resource *res = dev->resource + resno;
+	struct resource *res = pci_resource_n(dev, resno);
 	const char *res_name = pci_resource_name(dev, resno);
 	resource_size_t align, size;
 	int ret;
@@ -361,6 +359,9 @@ int pci_assign_resource(struct pci_dev *dev, int resno)
 
 	res->flags &= ~IORESOURCE_UNSET;
 	res->flags &= ~IORESOURCE_STARTALIGN;
+	if (resno >= PCI_BRIDGE_RESOURCES && resno <= PCI_BRIDGE_RESOURCE_END)
+		res->flags &= ~IORESOURCE_DISABLED;
+
 	pci_info(dev, "%s %pR: assigned\n", res_name, res);
 	if (resno < PCI_BRIDGE_RESOURCES)
 		pci_update_resource(dev, resno);
@@ -372,7 +373,7 @@ EXPORT_SYMBOL(pci_assign_resource);
 int pci_reassign_resource(struct pci_dev *dev, int resno,
 			  resource_size_t addsize, resource_size_t min_align)
 {
-	struct resource *res = dev->resource + resno;
+	struct resource *res = pci_resource_n(dev, resno);
 	const char *res_name = pci_resource_name(dev, resno);
 	unsigned long flags;
 	resource_size_t new_size;
@@ -389,7 +390,6 @@ int pci_reassign_resource(struct pci_dev *dev, int resno,
 		return -EINVAL;
 	}
 
-	/* already aligned with min_align */
 	new_size = resource_size(res) + addsize;
 	ret = _pci_assign_resource(dev, resno, new_size, min_align);
 	if (ret) {
@@ -409,75 +409,27 @@ int pci_reassign_resource(struct pci_dev *dev, int resno,
 	return 0;
 }
 
-void pci_release_resource(struct pci_dev *dev, int resno)
+int pci_release_resource(struct pci_dev *dev, int resno)
 {
-	struct resource *res = dev->resource + resno;
+	struct resource *res = pci_resource_n(dev, resno);
 	const char *res_name = pci_resource_name(dev, resno);
+	int ret;
+
+	if (!res->parent)
+		return 0;
 
 	pci_info(dev, "%s %pR: releasing\n", res_name, res);
 
-	if (!res->parent)
-		return;
-
-	release_resource(res);
+	ret = release_resource(res);
+	if (ret)
+		return ret;
 	res->end = resource_size(res) - 1;
 	res->start = 0;
 	res->flags |= IORESOURCE_UNSET;
+
+	return 0;
 }
 EXPORT_SYMBOL(pci_release_resource);
-
-int pci_resize_resource(struct pci_dev *dev, int resno, int size)
-{
-	struct resource *res = dev->resource + resno;
-	struct pci_host_bridge *host;
-	int old, ret;
-	u32 sizes;
-	u16 cmd;
-
-	/* Check if we must preserve the firmware's resource assignment */
-	host = pci_find_host_bridge(dev->bus);
-	if (host->preserve_config)
-		return -ENOTSUPP;
-
-	/* Make sure the resource isn't assigned before resizing it. */
-	if (!(res->flags & IORESOURCE_UNSET))
-		return -EBUSY;
-
-	pci_read_config_word(dev, PCI_COMMAND, &cmd);
-	if (cmd & PCI_COMMAND_MEMORY)
-		return -EBUSY;
-
-	sizes = pci_rebar_get_possible_sizes(dev, resno);
-	if (!sizes)
-		return -ENOTSUPP;
-
-	if (!(sizes & BIT(size)))
-		return -EINVAL;
-
-	old = pci_rebar_get_current_size(dev, resno);
-	if (old < 0)
-		return old;
-
-	ret = pci_rebar_set_size(dev, resno, size);
-	if (ret)
-		return ret;
-
-	resource_set_size(res, pci_rebar_size_to_bytes(size));
-
-	/* Check if the new config works by trying to assign everything. */
-	if (dev->bus->self) {
-		ret = pci_reassign_bridge_resources(dev->bus->self, res->flags);
-		if (ret)
-			goto error_resize;
-	}
-	return 0;
-
-error_resize:
-	pci_rebar_set_size(dev, resno, old);
-	resource_set_size(res, pci_rebar_size_to_bytes(old));
-	return ret;
-}
-EXPORT_SYMBOL(pci_resize_resource);
 
 int pci_enable_resources(struct pci_dev *dev, int mask)
 {
@@ -497,26 +449,29 @@ int pci_enable_resources(struct pci_dev *dev, int mask)
 
 		if (!(r->flags & (IORESOURCE_IO | IORESOURCE_MEM)))
 			continue;
-		if ((i == PCI_ROM_RESOURCE) &&
-				(!(r->flags & IORESOURCE_ROM_ENABLE)))
+		if (pci_resource_is_optional(dev, i))
 			continue;
 
-		if (r->flags & IORESOURCE_UNSET) {
-			pci_err(dev, "%s %pR: not assigned; can't enable device\n",
-				r_name, r);
-			return -EINVAL;
+		if (i < PCI_BRIDGE_RESOURCES) {
+			if (r->flags & IORESOURCE_UNSET) {
+				pci_err(dev, "%s %pR: not assigned; can't enable device\n",
+					r_name, r);
+				return -EINVAL;
+			}
+
+			if (!r->parent) {
+				pci_err(dev, "%s %pR: not claimed; can't enable device\n",
+					r_name, r);
+				return -EINVAL;
+			}
 		}
 
-		if (!r->parent) {
-			pci_err(dev, "%s %pR: not claimed; can't enable device\n",
-				r_name, r);
-			return -EINVAL;
+		if (r->parent) {
+			if (r->flags & IORESOURCE_IO)
+				cmd |= PCI_COMMAND_IO;
+			if (r->flags & IORESOURCE_MEM)
+				cmd |= PCI_COMMAND_MEMORY;
 		}
-
-		if (r->flags & IORESOURCE_IO)
-			cmd |= PCI_COMMAND_IO;
-		if (r->flags & IORESOURCE_MEM)
-			cmd |= PCI_COMMAND_MEMORY;
 	}
 
 	if (cmd != old_cmd) {

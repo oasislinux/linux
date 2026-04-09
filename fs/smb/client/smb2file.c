@@ -76,11 +76,11 @@ int smb2_fix_symlink_target_type(char **target, bool directory, struct cifs_sb_i
 		return 0;
 
 	if (!*target)
-		return -EIO;
+		return smb_EIO(smb_eio_trace_null_pointers);
 
 	len = strlen(*target);
 	if (!len)
-		return -EIO;
+		return smb_EIO1(smb_eio_trace_sym_target_len, len);
 
 	/*
 	 * If this is directory symlink and it does not have trailing slash then
@@ -104,7 +104,7 @@ int smb2_fix_symlink_target_type(char **target, bool directory, struct cifs_sb_i
 	 * both Windows and Linux systems. So return an error for such symlink.
 	 */
 	if (!directory && (*target)[len-1] == '/')
-		return -EIO;
+		return smb_EIO(smb_eio_trace_sym_slash);
 
 	return 0;
 }
@@ -140,7 +140,8 @@ int smb2_parse_symlink_response(struct cifs_sb_info *cifs_sb, const struct kvec 
 					 cifs_sb);
 }
 
-int smb2_open_file(const unsigned int xid, struct cifs_open_parms *oparms, __u32 *oplock, void *buf)
+int smb2_open_file(const unsigned int xid, struct cifs_open_parms *oparms,
+		   __u32 *oplock, void *buf)
 {
 	int rc;
 	__le16 *smb2_path;
@@ -152,16 +153,36 @@ int smb2_open_file(const unsigned int xid, struct cifs_open_parms *oparms, __u32
 	int err_buftype = CIFS_NO_BUFFER;
 	struct cifs_fid *fid = oparms->fid;
 	struct network_resiliency_req nr_ioctl_req;
+	bool retry_without_read_attributes = false;
 
 	smb2_path = cifs_convert_path_to_utf16(oparms->path, oparms->cifs_sb);
 	if (smb2_path == NULL)
 		return -ENOMEM;
 
-	oparms->desired_access |= FILE_READ_ATTRIBUTES;
+	/*
+	 * GENERIC_READ, GENERIC_EXECUTE, GENERIC_ALL and MAXIMUM_ALLOWED
+	 * contains also FILE_READ_ATTRIBUTES access right. So do not append
+	 * FILE_READ_ATTRIBUTES when not needed and prevent calling code path
+	 * for retry_without_read_attributes.
+	 */
+	if (!(oparms->desired_access & FILE_READ_ATTRIBUTES) &&
+	    !(oparms->desired_access & GENERIC_READ) &&
+	    !(oparms->desired_access & GENERIC_EXECUTE) &&
+	    !(oparms->desired_access & GENERIC_ALL) &&
+	    !(oparms->desired_access & MAXIMUM_ALLOWED)) {
+		oparms->desired_access |= FILE_READ_ATTRIBUTES;
+		retry_without_read_attributes = true;
+	}
 	smb2_oplock = SMB2_OPLOCK_LEVEL_BATCH;
 
 	rc = SMB2_open(xid, oparms, smb2_path, &smb2_oplock, smb2_data, NULL, &err_iov,
 		       &err_buftype);
+	if (rc == -EACCES && retry_without_read_attributes) {
+		free_rsp_buf(err_buftype, err_iov.iov_base);
+		oparms->desired_access &= ~FILE_READ_ATTRIBUTES;
+		rc = SMB2_open(xid, oparms, smb2_path, &smb2_oplock, smb2_data, NULL, &err_iov,
+			       &err_buftype);
+	}
 	if (rc && data) {
 		struct smb2_hdr *hdr = err_iov.iov_base;
 

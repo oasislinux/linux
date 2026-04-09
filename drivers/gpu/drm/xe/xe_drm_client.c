@@ -167,7 +167,7 @@ void xe_drm_client_remove_bo(struct xe_bo *bo)
 static void bo_meminfo(struct xe_bo *bo,
 		       struct drm_memory_stats stats[TTM_NUM_MEM_TYPES])
 {
-	u64 sz = bo->size;
+	u64 sz = xe_bo_size(bo);
 	u32 mem_type = bo->ttm.resource->mem_type;
 
 	xe_bo_assert_held(bo);
@@ -323,6 +323,14 @@ static void show_run_ticks(struct drm_printer *p, struct drm_file *file)
 	struct xe_exec_queue *q;
 	u64 gpu_timestamp;
 	unsigned int fw_ref;
+
+	/*
+	 * RING_TIMESTAMP registers are inaccessible in VF mode.
+	 * Without drm-total-cycles-*, other keys provide little value.
+	 * Show all or none of the optional "run_ticks" keys in this case.
+	 */
+	if (IS_SRIOV_VF(xe))
+		return;
 
 	/*
 	 * Wait for any exec queue going away: their cycles will get updated on

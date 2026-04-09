@@ -246,17 +246,20 @@ extern int sysctl_mld_qrv;
 #define _DEVADD(net, statname, mod, idev, field, val)			\
 ({									\
 	struct inet6_dev *_idev = (idev);				\
+	unsigned long _field = (field);					\
+	unsigned long _val = (val);					\
 	if (likely(_idev != NULL))					\
-		mod##SNMP_ADD_STATS((_idev)->stats.statname, (field), (val)); \
-	mod##SNMP_ADD_STATS((net)->mib.statname##_statistics, (field), (val));\
+		mod##SNMP_ADD_STATS((_idev)->stats.statname, _field,  _val); \
+	mod##SNMP_ADD_STATS((net)->mib.statname##_statistics, _field, _val);\
 })
 
 #define _DEVUPD(net, statname, mod, idev, field, val)			\
 ({									\
 	struct inet6_dev *_idev = (idev);				\
+	unsigned long _val = (val);					\
 	if (likely(_idev != NULL))					\
-		mod##SNMP_UPD_PO_STATS((_idev)->stats.statname, field, (val)); \
-	mod##SNMP_UPD_PO_STATS((net)->mib.statname##_statistics, field, (val));\
+		mod##SNMP_UPD_PO_STATS((_idev)->stats.statname, field, _val); \
+	mod##SNMP_UPD_PO_STATS((net)->mib.statname##_statistics, field, _val);\
 })
 
 /* MIBs */
@@ -363,15 +366,6 @@ struct ipcm6_cookie {
 	struct ipv6_txoptions *opt;
 };
 
-static inline void ipcm6_init(struct ipcm6_cookie *ipc6)
-{
-	*ipc6 = (struct ipcm6_cookie) {
-		.hlimit = -1,
-		.tclass = -1,
-		.dontfrag = -1,
-	};
-}
-
 static inline void ipcm6_init_sk(struct ipcm6_cookie *ipc6,
 				 const struct sock *sk)
 {
@@ -380,6 +374,8 @@ static inline void ipcm6_init_sk(struct ipcm6_cookie *ipc6,
 		.tclass = inet6_sk(sk)->tclass,
 		.dontfrag = inet6_test_bit(DONTFRAG, sk),
 	};
+
+	sockcm_init(&ipc6->sockc, sk);
 }
 
 static inline struct ipv6_txoptions *txopt_get(const struct ipv6_pinfo *np)
@@ -1192,10 +1188,10 @@ int do_ipv6_getsockopt(struct sock *sk, int level, int optname,
 int ipv6_getsockopt(struct sock *sk, int level, int optname,
 		    char __user *optval, int __user *optlen);
 
-int __ip6_datagram_connect(struct sock *sk, struct sockaddr *addr,
+int __ip6_datagram_connect(struct sock *sk, struct sockaddr_unsized *addr,
 			   int addr_len);
-int ip6_datagram_connect(struct sock *sk, struct sockaddr *addr, int addr_len);
-int ip6_datagram_connect_v6_only(struct sock *sk, struct sockaddr *addr,
+int ip6_datagram_connect(struct sock *sk, struct sockaddr_unsized *addr, int addr_len);
+int ip6_datagram_connect_v6_only(struct sock *sk, struct sockaddr_unsized *addr,
 				 int addr_len);
 int ip6_datagram_dst_update(struct sock *sk, bool fix_sk_saddr);
 void ip6_datagram_release_cb(struct sock *sk);
@@ -1212,8 +1208,8 @@ void ipv6_local_rxpmtu(struct sock *sk, struct flowi6 *fl6, u32 mtu);
 void inet6_cleanup_sock(struct sock *sk);
 void inet6_sock_destruct(struct sock *sk);
 int inet6_release(struct socket *sock);
-int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len);
-int inet6_bind_sk(struct sock *sk, struct sockaddr *uaddr, int addr_len);
+int inet6_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len);
+int inet6_bind_sk(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len);
 int inet6_getname(struct socket *sock, struct sockaddr *uaddr,
 		  int peer);
 int inet6_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);

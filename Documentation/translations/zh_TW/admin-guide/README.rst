@@ -149,7 +149,7 @@ Linux內核6.x版本 <http://kernel.org/>
 
      "make xconfig"     基於Qt的配置工具。
 
-     "make gconfig"     基於GTK+的配置工具。
+     "make gconfig"     基於GTK的配置工具。
 
      "make oldconfig"   基於現有的 ./.config 文件選擇所有選項，並詢問
                         新配置選項。
@@ -291,5 +291,5 @@ Documentation/translations/zh_CN/admin-guide/bug-hunting.rst 。
 
 更多用GDB調試內核的信息，請參閱：
 Documentation/translations/zh_CN/dev-tools/gdb-kernel-debugging.rst
-和 Documentation/dev-tools/kgdb.rst 。
+和 Documentation/process/debugging/kgdb.rst 。
 

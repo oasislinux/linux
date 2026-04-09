@@ -1498,7 +1498,7 @@ static int msb_ftl_scan(struct msb_data *msb)
 
 static void msb_cache_flush_timer(struct timer_list *t)
 {
-	struct msb_data *msb = from_timer(msb, t, cache_flush_timer);
+	struct msb_data *msb = timer_container_of(msb, t, cache_flush_timer);
 
 	msb->need_flush_cache = true;
 	queue_work(msb->io_queue, &msb->io_work);
@@ -1510,7 +1510,7 @@ static void msb_cache_discard(struct msb_data *msb)
 	if (msb->cache_block_lba == MS_BLOCK_INVALID)
 		return;
 
-	del_timer_sync(&msb->cache_flush_timer);
+	timer_delete_sync(&msb->cache_flush_timer);
 
 	dbg_verbose("Discarding the write cache");
 	msb->cache_block_lba = MS_BLOCK_INVALID;
@@ -1904,7 +1904,7 @@ static void msb_io_work(struct work_struct *work)
 
 		/* process the request */
 		dbg_verbose("IO: processing new request");
-		blk_rq_map_sg(msb->queue, req, sg);
+		blk_rq_map_sg(req, sg);
 
 		lba = blk_rq_pos(req);
 
@@ -1953,10 +1953,10 @@ static void msb_data_clear(struct msb_data *msb)
 	msb->card = NULL;
 }
 
-static int msb_bd_getgeo(struct block_device *bdev,
+static int msb_bd_getgeo(struct gendisk *disk,
 				 struct hd_geometry *geo)
 {
-	struct msb_data *msb = bdev->bd_disk->private_data;
+	struct msb_data *msb = disk->private_data;
 	*geo = msb->geometry;
 	return 0;
 }
@@ -2027,7 +2027,7 @@ static void msb_stop(struct memstick_dev *card)
 	msb->io_queue_stopped = true;
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
-	del_timer_sync(&msb->cache_flush_timer);
+	timer_delete_sync(&msb->cache_flush_timer);
 	flush_workqueue(msb->io_queue);
 
 	spin_lock_irqsave(&msb->q_lock, flags);

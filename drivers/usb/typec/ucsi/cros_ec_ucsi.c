@@ -105,12 +105,13 @@ static int cros_ucsi_async_control(struct ucsi *ucsi, u64 cmd)
 	return 0;
 }
 
-static int cros_ucsi_sync_control(struct ucsi *ucsi, u64 cmd)
+static int cros_ucsi_sync_control(struct ucsi *ucsi, u64 cmd, u32 *cci,
+				  void *data, size_t size)
 {
 	struct cros_ucsi_data *udata = ucsi_get_drvdata(ucsi);
 	int ret;
 
-	ret = ucsi_sync_control_common(ucsi, cmd);
+	ret = ucsi_sync_control_common(ucsi, cmd, cci, data, size);
 	switch (ret) {
 	case -EBUSY:
 		/* EC may return -EBUSY if CCI.busy is set.
@@ -136,6 +137,7 @@ static int cros_ucsi_sync_control(struct ucsi *ucsi, u64 cmd)
 static const struct ucsi_operations cros_ucsi_ops = {
 	.read_version = cros_ucsi_read_version,
 	.read_cci = cros_ucsi_read_cci,
+	.poll_cci = cros_ucsi_read_cci,
 	.read_message_in = cros_ucsi_read_message_in,
 	.async_control = cros_ucsi_async_control,
 	.sync_control = cros_ucsi_sync_control,
@@ -205,12 +207,19 @@ static int cros_ucsi_event(struct notifier_block *nb,
 {
 	struct cros_ucsi_data *udata = container_of(nb, struct cros_ucsi_data, nb);
 
-	if (!(host_event & PD_EVENT_PPM))
-		return NOTIFY_OK;
+	if (host_event & PD_EVENT_INIT) {
+		/* Late init event received from ChromeOS EC. Treat this as a
+		 * system resume to re-enable communication with the PPM.
+		 */
+		dev_dbg(udata->dev, "Late PD init received\n");
+		ucsi_resume(udata->ucsi);
+	}
 
-	dev_dbg(udata->dev, "UCSI notification received\n");
-	flush_work(&udata->work);
-	schedule_work(&udata->work);
+	if (host_event & PD_EVENT_PPM) {
+		dev_dbg(udata->dev, "UCSI notification received\n");
+		flush_work(&udata->work);
+		schedule_work(&udata->work);
+	}
 
 	return NOTIFY_OK;
 }

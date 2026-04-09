@@ -745,19 +745,30 @@ static int set_regs_in_dict(PyObject *dict,
 	const char *arch = perf_env__arch(evsel__env(evsel));
 
 	int size = (__sw_hweight64(attr->sample_regs_intr) * MAX_REG_SIZE) + 1;
-	char *bf = malloc(size);
-	if (!bf)
-		return -1;
+	char *bf = NULL;
 
-	regs_map(&sample->intr_regs, attr->sample_regs_intr, arch, bf, size);
+	if (sample->intr_regs) {
+		bf = malloc(size);
+		if (!bf)
+			return -1;
 
-	pydict_set_item_string_decref(dict, "iregs",
-			_PyUnicode_FromString(bf));
+		regs_map(sample->intr_regs, attr->sample_regs_intr, arch, bf, size);
 
-	regs_map(&sample->user_regs, attr->sample_regs_user, arch, bf, size);
+		pydict_set_item_string_decref(dict, "iregs",
+					_PyUnicode_FromString(bf));
+	}
 
-	pydict_set_item_string_decref(dict, "uregs",
-			_PyUnicode_FromString(bf));
+	if (sample->user_regs) {
+		if (!bf) {
+			bf = malloc(size);
+			if (!bf)
+				return -1;
+		}
+		regs_map(sample->user_regs, attr->sample_regs_user, arch, bf, size);
+
+		pydict_set_item_string_decref(dict, "uregs",
+					_PyUnicode_FromString(bf));
+	}
 	free(bf);
 
 	return 0;
@@ -769,14 +780,13 @@ static void set_sym_in_dict(PyObject *dict, struct addr_location *al,
 			    const char *sym_field, const char *symoff_field,
 			    const char *map_pgoff)
 {
-	char sbuild_id[SBUILD_ID_SIZE];
-
 	if (al->map) {
+		char sbuild_id[SBUILD_ID_SIZE];
 		struct dso *dso = map__dso(al->map);
 
 		pydict_set_item_string_decref(dict, dso_field,
 					      _PyUnicode_FromString(dso__name(dso)));
-		build_id__sprintf(dso__bid(dso), sbuild_id);
+		build_id__snprintf(dso__bid(dso), sbuild_id, sizeof(sbuild_id));
 		pydict_set_item_string_decref(dict, dso_bid_field,
 			_PyUnicode_FromString(sbuild_id));
 		pydict_set_item_string_decref(dict, dso_map_start,
@@ -1227,7 +1237,7 @@ static int python_export_dso(struct db_export *dbe, struct dso *dso,
 	char sbuild_id[SBUILD_ID_SIZE];
 	PyObject *t;
 
-	build_id__sprintf(dso__bid(dso), sbuild_id);
+	build_id__snprintf(dso__bid(dso), sbuild_id, sizeof(sbuild_id));
 
 	t = tuple_new(5);
 
@@ -1295,7 +1305,7 @@ static void python_export_sample_table(struct db_export *dbe,
 
 	tuple_set_d64(t, 0, es->db_id);
 	tuple_set_d64(t, 1, es->evsel->db_id);
-	tuple_set_d64(t, 2, maps__machine(es->al->maps)->db_id);
+	tuple_set_d64(t, 2, maps__machine(thread__maps(es->al->thread))->db_id);
 	tuple_set_d64(t, 3, thread__db_id(es->al->thread));
 	tuple_set_d64(t, 4, es->comm_db_id);
 	tuple_set_d64(t, 5, es->dso_db_id);

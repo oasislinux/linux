@@ -7,8 +7,7 @@
  * Author: Gerald Schaefer <gerald.schaefer@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "monreader"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "monreader: " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -24,6 +23,7 @@
 #include <linux/slab.h>
 #include <net/iucv/iucv.h>
 #include <linux/uaccess.h>
+#include <asm/machine.h>
 #include <asm/ebcdic.h>
 #include <asm/extmem.h>
 
@@ -456,7 +456,7 @@ static int __init mon_init(void)
 {
 	int rc;
 
-	if (!MACHINE_IS_VM) {
+	if (!machine_is_vm()) {
 		pr_err("The z/VM *MONITOR record device driver cannot be "
 		       "loaded without z/VM\n");
 		return -ENODEV;

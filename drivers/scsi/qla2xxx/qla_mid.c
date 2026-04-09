@@ -20,7 +20,7 @@ void
 qla2x00_vp_stop_timer(scsi_qla_host_t *vha)
 {
 	if (vha->vp_idx && vha->timer_active) {
-		del_timer_sync(&vha->timer);
+		timer_delete_sync(&vha->timer);
 		vha->timer_active = 0;
 	}
 }
@@ -899,9 +899,7 @@ qla25xx_create_rsp_que(struct qla_hw_data *ha, uint16_t options,
 	    rsp->options, rsp->id, rsp->rsp_q_in,
 	    rsp->rsp_q_out);
 
-	ret = qla25xx_request_irq(ha, qpair, qpair->msix,
-		ha->flags.disable_msix_handshake ?
-		QLA_MSIX_QPAIR_MULTIQ_RSP_Q : QLA_MSIX_QPAIR_MULTIQ_RSP_Q_HS);
+	ret = qla25xx_request_irq(ha, qpair, qpair->msix);
 	if (ret)
 		goto que_failed;
 

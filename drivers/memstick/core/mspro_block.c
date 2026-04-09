@@ -189,10 +189,10 @@ static void mspro_block_bd_free_disk(struct gendisk *disk)
 	kfree(msb);
 }
 
-static int mspro_block_bd_getgeo(struct block_device *bdev,
+static int mspro_block_bd_getgeo(struct gendisk *disk,
 				 struct hd_geometry *geo)
 {
-	struct mspro_block_data *msb = bdev->bd_disk->private_data;
+	struct mspro_block_data *msb = disk->private_data;
 
 	geo->heads = msb->heads;
 	geo->sectors = msb->sectors_per_track;
@@ -560,8 +560,7 @@ has_int_reg:
 		t_offset += msb->current_page * msb->page_size;
 
 		sg_set_page(&t_sg,
-			    nth_page(sg_page(&(msb->req_sg[msb->current_seg])),
-				     t_offset >> PAGE_SHIFT),
+			    sg_page(&(msb->req_sg[msb->current_seg])) + (t_offset >> PAGE_SHIFT),
 			    msb->page_size, offset_in_page(t_offset));
 
 		memstick_init_req_sg(*mrq, msb->data_dir == READ
@@ -627,9 +626,7 @@ static int mspro_block_issue_req(struct memstick_dev *card)
 	while (true) {
 		msb->current_page = 0;
 		msb->current_seg = 0;
-		msb->seg_count = blk_rq_map_sg(msb->block_req->q,
-					       msb->block_req,
-					       msb->req_sg);
+		msb->seg_count = blk_rq_map_sg(msb->block_req, msb->req_sg);
 
 		if (!msb->seg_count) {
 			unsigned int bytes = blk_rq_cur_bytes(msb->block_req);

@@ -490,6 +490,18 @@ struct drm_crtc_helper_funcs {
 				     bool in_vblank_irq, int *vpos, int *hpos,
 				     ktime_t *stime, ktime_t *etime,
 				     const struct drm_display_mode *mode);
+
+	/**
+	 * @handle_vblank_timeout: Handles timeouts of the vblank timer.
+	 *
+	 * Called by CRTC's the vblank timer on each timeout. Semantics is
+	 * equivalient to drm_crtc_handle_vblank(). Implementations should
+	 * invoke drm_crtc_handle_vblank() as part of processing the timeout.
+	 *
+	 * This callback is optional. If unset, the vblank timer invokes
+	 * drm_crtc_handle_vblank() directly.
+	 */
+	bool (*handle_vblank_timeout)(struct drm_crtc *crtc);
 };
 
 /**
@@ -967,7 +979,7 @@ struct drm_connector_helper_funcs {
 	 * drm_mode_status.
 	 */
 	enum drm_mode_status (*mode_valid)(struct drm_connector *connector,
-					   struct drm_display_mode *mode);
+					   const struct drm_display_mode *mode);
 
 	/**
 	 * @mode_valid_ctx:
@@ -1006,7 +1018,7 @@ struct drm_connector_helper_funcs {
 	 *
 	 */
 	int (*mode_valid_ctx)(struct drm_connector *connector,
-			      struct drm_display_mode *mode,
+			      const struct drm_display_mode *mode,
 			      struct drm_modeset_acquire_ctx *ctx,
 			      enum drm_mode_status *status);
 
@@ -1400,13 +1412,18 @@ struct drm_plane_helper_funcs {
 	 * given update can be committed asynchronously, that is, if it can
 	 * jump ahead of the state currently queued for update.
 	 *
+	 * This function is also used by drm_atomic_set_property() to determine
+	 * if the plane can be flipped in async. The flip flag is used to
+	 * distinguish if the function is used for just the plane state or for a
+	 * flip.
+	 *
 	 * RETURNS:
 	 *
 	 * Return 0 on success and any error returned indicates that the update
 	 * can not be applied in asynchronous manner.
 	 */
 	int (*atomic_async_check)(struct drm_plane *plane,
-				  struct drm_atomic_state *state);
+				  struct drm_atomic_state *state, bool flip);
 
 	/**
 	 * @atomic_async_update:

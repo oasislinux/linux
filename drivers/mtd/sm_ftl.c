@@ -44,8 +44,7 @@ static ssize_t sm_attr_show(struct device *dev, struct device_attribute *attr,
 	struct sm_sysfs_attribute *sm_attr =
 		container_of(attr, struct sm_sysfs_attribute, dev_attr);
 
-	strncpy(buf, sm_attr->data, sm_attr->len);
-	return sm_attr->len;
+	return sysfs_emit(buf, "%.*s", sm_attr->len, sm_attr->data);
 }
 
 
@@ -157,7 +156,7 @@ static int sm_read_lba(struct sm_oob *oob)
 	if (!memcmp(oob, erased_pattern, SM_OOB_SIZE))
 		return -1;
 
-	/* Now check is both copies of the LBA differ too much */
+	/* Now check if both copies of the LBA differ too much */
 	lba_test = *(uint16_t *)oob->lba_copy1 ^ *(uint16_t*)oob->lba_copy2;
 	if (lba_test && !is_power_of_2(lba_test))
 		return -2;
@@ -993,7 +992,7 @@ restart:
 /* flush timer, runs a second after last write */
 static void sm_cache_flush_timer(struct timer_list *t)
 {
-	struct sm_ftl *ftl = from_timer(ftl, t, timer);
+	struct sm_ftl *ftl = timer_container_of(ftl, t, timer);
 	queue_work(cache_flush_workqueue, &ftl->flush_work);
 }
 
@@ -1067,7 +1066,7 @@ static int sm_write(struct mtd_blktrans_dev *dev,
 	sm_break_offset(ftl, sec_no << 9, &zone_num, &block, &boffset);
 
 	/* No need in flush thread running now */
-	del_timer(&ftl->timer);
+	timer_delete(&ftl->timer);
 	mutex_lock(&ftl->mutex);
 
 	zone = sm_get_zone(ftl, zone_num);
@@ -1111,7 +1110,7 @@ static void sm_release(struct mtd_blktrans_dev *dev)
 {
 	struct sm_ftl *ftl = dev->priv;
 
-	del_timer_sync(&ftl->timer);
+	timer_delete_sync(&ftl->timer);
 	cancel_work_sync(&ftl->flush_work);
 	mutex_lock(&ftl->mutex);
 	sm_cache_flush(ftl);

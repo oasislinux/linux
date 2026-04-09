@@ -13,6 +13,7 @@
 #include <linux/objtool.h>
 #include <linux/pgtable.h>
 #include <linux/kexec.h>
+#include <linux/kvm_types.h>
 #include <acpi/reboot.h>
 #include <asm/io.h>
 #include <asm/apic.h>
@@ -541,7 +542,7 @@ void cpu_emergency_register_virt_callback(cpu_emergency_virt_cb *callback)
 
 	rcu_assign_pointer(cpu_emergency_virt_callback, callback);
 }
-EXPORT_SYMBOL_GPL(cpu_emergency_register_virt_callback);
+EXPORT_SYMBOL_FOR_KVM(cpu_emergency_register_virt_callback);
 
 void cpu_emergency_unregister_virt_callback(cpu_emergency_virt_cb *callback)
 {
@@ -551,7 +552,7 @@ void cpu_emergency_unregister_virt_callback(cpu_emergency_virt_cb *callback)
 	rcu_assign_pointer(cpu_emergency_virt_callback, NULL);
 	synchronize_rcu();
 }
-EXPORT_SYMBOL_GPL(cpu_emergency_unregister_virt_callback);
+EXPORT_SYMBOL_FOR_KVM(cpu_emergency_unregister_virt_callback);
 
 /*
  * Disable virtualization, i.e. VMX or SVM, to ensure INIT is recognized during
@@ -921,20 +922,16 @@ void nmi_shootdown_cpus(nmi_shootdown_cb callback)
 		return;
 
 	/* Make a note of crashing cpu. Will be used in NMI callback. */
-	crashing_cpu = safe_smp_processor_id();
+	crashing_cpu = smp_processor_id();
 
 	shootdown_callback = callback;
 
 	atomic_set(&waiting_for_crash_ipi, num_online_cpus() - 1);
-	/* Would it be better to replace the trap vector here? */
-	if (register_nmi_handler(NMI_LOCAL, crash_nmi_callback,
-				 NMI_FLAG_FIRST, "crash"))
-		return;		/* Return what? */
+
 	/*
-	 * Ensure the new callback function is set before sending
-	 * out the NMI
+	 * Set emergency handler to preempt other handlers.
 	 */
-	wmb();
+	set_emergency_nmi_handler(NMI_LOCAL, crash_nmi_callback);
 
 	apic_send_IPI_allbutself(NMI_VECTOR);
 

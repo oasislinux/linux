@@ -4,8 +4,28 @@
 //!
 //! C header: [`include/asm-generic/io.h`](srctree/include/asm-generic/io.h)
 
-use crate::error::{code::EINVAL, Result};
-use crate::{bindings, build_assert};
+use crate::{
+    bindings,
+    prelude::*, //
+};
+
+pub mod mem;
+pub mod poll;
+pub mod resource;
+
+pub use resource::Resource;
+
+/// Physical address type.
+///
+/// This is a type alias to either `u32` or `u64` depending on the config option
+/// `CONFIG_PHYS_ADDR_T_64BIT`, and it can be a u64 even on 32-bit architectures.
+pub type PhysAddr = bindings::phys_addr_t;
+
+/// Resource Size type.
+///
+/// This is a type alias to either `u32` or `u64` depending on the config option
+/// `CONFIG_PHYS_ADDR_T_64BIT`, and it can be a u64 even on 32-bit architectures.
+pub type ResourceSize = bindings::resource_size_t;
 
 /// Raw representation of an MMIO region.
 ///
@@ -43,7 +63,7 @@ impl<const SIZE: usize> IoRaw<SIZE> {
     }
 }
 
-/// IO-mapped memory, starting at the base address @addr and spanning @maxlen bytes.
+/// IO-mapped memory region.
 ///
 /// The creator (usually a subsystem / bus such as PCI) is responsible for creating the
 /// mapping, performing an additional region request etc.
@@ -56,8 +76,16 @@ impl<const SIZE: usize> IoRaw<SIZE> {
 /// # Examples
 ///
 /// ```no_run
-/// # use kernel::{bindings, io::{Io, IoRaw}};
-/// # use core::ops::Deref;
+/// use kernel::{
+///     bindings,
+///     ffi::c_void,
+///     io::{
+///         Io,
+///         IoRaw,
+///         PhysAddr,
+///     },
+/// };
+/// use core::ops::Deref;
 ///
 /// // See also [`pci::Bar`] for a real example.
 /// struct IoMem<const SIZE: usize>(IoRaw<SIZE>);
@@ -70,19 +98,19 @@ impl<const SIZE: usize> IoRaw<SIZE> {
 ///     unsafe fn new(paddr: usize) -> Result<Self>{
 ///         // SAFETY: By the safety requirements of this function [`paddr`, `paddr` + `SIZE`) is
 ///         // valid for `ioremap`.
-///         let addr = unsafe { bindings::ioremap(paddr as _, SIZE as _) };
+///         let addr = unsafe { bindings::ioremap(paddr as PhysAddr, SIZE) };
 ///         if addr.is_null() {
 ///             return Err(ENOMEM);
 ///         }
 ///
-///         Ok(IoMem(IoRaw::new(addr as _, SIZE)?))
+///         Ok(IoMem(IoRaw::new(addr as usize, SIZE)?))
 ///     }
 /// }
 ///
 /// impl<const SIZE: usize> Drop for IoMem<SIZE> {
 ///     fn drop(&mut self) {
 ///         // SAFETY: `self.0.addr()` is guaranteed to be properly mapped by `Self::new`.
-///         unsafe { bindings::iounmap(self.0.addr() as _); };
+///         unsafe { bindings::iounmap(self.0.addr() as *mut c_void); };
 ///     }
 /// }
 ///
@@ -98,9 +126,9 @@ impl<const SIZE: usize> IoRaw<SIZE> {
 ///# fn no_run() -> Result<(), Error> {
 /// // SAFETY: Invalid usage for example purposes.
 /// let iomem = unsafe { IoMem::<{ core::mem::size_of::<u32>() }>::new(0xBAAAAAAD)? };
-/// iomem.writel(0x42, 0x0);
-/// assert!(iomem.try_writel(0x42, 0x0).is_ok());
-/// assert!(iomem.try_writel(0x42, 0x4).is_err());
+/// iomem.write32(0x42, 0x0);
+/// assert!(iomem.try_write32(0x42, 0x0).is_ok());
+/// assert!(iomem.try_write32(0x42, 0x4).is_err());
 /// # Ok(())
 /// # }
 /// ```
@@ -108,18 +136,19 @@ impl<const SIZE: usize> IoRaw<SIZE> {
 pub struct Io<const SIZE: usize = 0>(IoRaw<SIZE>);
 
 macro_rules! define_read {
-    ($(#[$attr:meta])* $name:ident, $try_name:ident, $type_name:ty) => {
+    ($(#[$attr:meta])* $name:ident, $try_name:ident, $c_fn:ident -> $type_name:ty) => {
         /// Read IO data from a given offset known at compile time.
         ///
         /// Bound checks are performed on compile time, hence if the offset is not known at compile
         /// time, the build will fail.
         $(#[$attr])*
-        #[inline]
+        // Always inline to optimize out error path of `io_addr_assert`.
+        #[inline(always)]
         pub fn $name(&self, offset: usize) -> $type_name {
             let addr = self.io_addr_assert::<$type_name>(offset);
 
             // SAFETY: By the type invariant `addr` is a valid address for MMIO operations.
-            unsafe { bindings::$name(addr as _) }
+            unsafe { bindings::$c_fn(addr as *const c_void) }
         }
 
         /// Read IO data from a given offset.
@@ -131,24 +160,25 @@ macro_rules! define_read {
             let addr = self.io_addr::<$type_name>(offset)?;
 
             // SAFETY: By the type invariant `addr` is a valid address for MMIO operations.
-            Ok(unsafe { bindings::$name(addr as _) })
+            Ok(unsafe { bindings::$c_fn(addr as *const c_void) })
         }
     };
 }
 
 macro_rules! define_write {
-    ($(#[$attr:meta])* $name:ident, $try_name:ident, $type_name:ty) => {
+    ($(#[$attr:meta])* $name:ident, $try_name:ident, $c_fn:ident <- $type_name:ty) => {
         /// Write IO data from a given offset known at compile time.
         ///
         /// Bound checks are performed on compile time, hence if the offset is not known at compile
         /// time, the build will fail.
         $(#[$attr])*
-        #[inline]
+        // Always inline to optimize out error path of `io_addr_assert`.
+        #[inline(always)]
         pub fn $name(&self, value: $type_name, offset: usize) {
             let addr = self.io_addr_assert::<$type_name>(offset);
 
             // SAFETY: By the type invariant `addr` is a valid address for MMIO operations.
-            unsafe { bindings::$name(value, addr as _, ) }
+            unsafe { bindings::$c_fn(value, addr as *mut c_void) }
         }
 
         /// Write IO data from a given offset.
@@ -160,7 +190,7 @@ macro_rules! define_write {
             let addr = self.io_addr::<$type_name>(offset)?;
 
             // SAFETY: By the type invariant `addr` is a valid address for MMIO operations.
-            unsafe { bindings::$name(value, addr as _) }
+            unsafe { bindings::$c_fn(value, addr as *mut c_void) }
             Ok(())
         }
     };
@@ -211,50 +241,51 @@ impl<const SIZE: usize> Io<SIZE> {
         self.addr().checked_add(offset).ok_or(EINVAL)
     }
 
-    #[inline]
+    // Always inline to optimize out error path of `build_assert`.
+    #[inline(always)]
     fn io_addr_assert<U>(&self, offset: usize) -> usize {
         build_assert!(Self::offset_valid::<U>(offset, SIZE));
 
         self.addr() + offset
     }
 
-    define_read!(readb, try_readb, u8);
-    define_read!(readw, try_readw, u16);
-    define_read!(readl, try_readl, u32);
+    define_read!(read8, try_read8, readb -> u8);
+    define_read!(read16, try_read16, readw -> u16);
+    define_read!(read32, try_read32, readl -> u32);
     define_read!(
         #[cfg(CONFIG_64BIT)]
-        readq,
-        try_readq,
-        u64
+        read64,
+        try_read64,
+        readq -> u64
     );
 
-    define_read!(readb_relaxed, try_readb_relaxed, u8);
-    define_read!(readw_relaxed, try_readw_relaxed, u16);
-    define_read!(readl_relaxed, try_readl_relaxed, u32);
+    define_read!(read8_relaxed, try_read8_relaxed, readb_relaxed -> u8);
+    define_read!(read16_relaxed, try_read16_relaxed, readw_relaxed -> u16);
+    define_read!(read32_relaxed, try_read32_relaxed, readl_relaxed -> u32);
     define_read!(
         #[cfg(CONFIG_64BIT)]
-        readq_relaxed,
-        try_readq_relaxed,
-        u64
+        read64_relaxed,
+        try_read64_relaxed,
+        readq_relaxed -> u64
     );
 
-    define_write!(writeb, try_writeb, u8);
-    define_write!(writew, try_writew, u16);
-    define_write!(writel, try_writel, u32);
+    define_write!(write8, try_write8, writeb <- u8);
+    define_write!(write16, try_write16, writew <- u16);
+    define_write!(write32, try_write32, writel <- u32);
     define_write!(
         #[cfg(CONFIG_64BIT)]
-        writeq,
-        try_writeq,
-        u64
+        write64,
+        try_write64,
+        writeq <- u64
     );
 
-    define_write!(writeb_relaxed, try_writeb_relaxed, u8);
-    define_write!(writew_relaxed, try_writew_relaxed, u16);
-    define_write!(writel_relaxed, try_writel_relaxed, u32);
+    define_write!(write8_relaxed, try_write8_relaxed, writeb_relaxed <- u8);
+    define_write!(write16_relaxed, try_write16_relaxed, writew_relaxed <- u16);
+    define_write!(write32_relaxed, try_write32_relaxed, writel_relaxed <- u32);
     define_write!(
         #[cfg(CONFIG_64BIT)]
-        writeq_relaxed,
-        try_writeq_relaxed,
-        u64
+        write64_relaxed,
+        try_write64_relaxed,
+        writeq_relaxed <- u64
     );
 }

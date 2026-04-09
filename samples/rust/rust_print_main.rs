@@ -8,7 +8,7 @@ use kernel::prelude::*;
 module! {
     type: RustPrint,
     name: "rust_print",
-    author: "Rust for Linux Contributors",
+    authors: ["Rust for Linux Contributors"],
     description: "Rust printing macros sample",
     license: "GPL",
 }
@@ -40,7 +40,7 @@ fn arc_print() -> Result {
         // behaviour, contract or protocol on both `i32` and `&str` into a single `Arc` of
         // type `Arc<dyn Display>`.
 
-        use core::fmt::Display;
+        use kernel::fmt::Display;
         fn arc_dyn_print(arc: &Arc<dyn Display>) {
             pr_info!("Arc<dyn Display> says {arc}");
         }

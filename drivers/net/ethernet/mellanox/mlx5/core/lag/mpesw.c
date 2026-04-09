@@ -65,21 +65,24 @@ err_metadata:
 	return err;
 }
 
-#define MLX5_LAG_MPESW_OFFLOADS_SUPPORTED_PORTS 4
 static int enable_mpesw(struct mlx5_lag *ldev)
 {
-	int idx = mlx5_lag_get_dev_index_by_seq(ldev, MLX5_LAG_P1);
 	struct mlx5_core_dev *dev0;
 	int err;
+	int idx;
 	int i;
 
-	if (idx < 0 || ldev->mode != MLX5_LAG_MODE_NONE)
+	if (ldev->mode == MLX5_LAG_MODE_MPESW)
+		return 0;
+
+	if (ldev->mode != MLX5_LAG_MODE_NONE)
+		return -EINVAL;
+
+	idx = mlx5_lag_get_dev_index_by_seq(ldev, MLX5_LAG_P1);
+	if (idx < 0)
 		return -EINVAL;
 
 	dev0 = ldev->pf[idx].dev;
-	if (ldev->ports > MLX5_LAG_MPESW_OFFLOADS_SUPPORTED_PORTS)
-		return -EOPNOTSUPP;
-
 	if (mlx5_eswitch_mode(dev0) != MLX5_ESWITCH_OFFLOADS ||
 	    !MLX5_CAP_PORT_SELECTION(dev0, port_select_flow_table) ||
 	    !MLX5_CAP_GEN(dev0, create_lag_when_not_master_up) ||

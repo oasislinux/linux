@@ -14,7 +14,6 @@
 #include "dce_v8_0.h"
 #endif
 #include "dce_v10_0.h"
-#include "dce_v11_0.h"
 #include "ivsrcid/ivsrcid_vislands30.h"
 #include "amdgpu_vkms.h"
 #include "amdgpu_display.h"
@@ -188,8 +187,8 @@ static int amdgpu_vkms_crtc_init(struct drm_device *dev, struct drm_crtc *crtc,
 	amdgpu_crtc->connector = NULL;
 	amdgpu_crtc->vsync_timer_enabled = AMDGPU_IRQ_STATE_DISABLE;
 
-	hrtimer_init(&amdgpu_crtc->vblank_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	amdgpu_crtc->vblank_timer.function = &amdgpu_vkms_vblank_simulate;
+	hrtimer_setup(&amdgpu_crtc->vblank_timer, &amdgpu_vkms_vblank_simulate, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 
 	return ret;
 }
@@ -581,13 +580,6 @@ static int amdgpu_vkms_hw_init(struct amdgpu_ip_block *ip_block)
 	case CHIP_TONGA:
 		dce_v10_0_disable_dce(adev);
 		break;
-	case CHIP_CARRIZO:
-	case CHIP_STONEY:
-	case CHIP_POLARIS10:
-	case CHIP_POLARIS11:
-	case CHIP_VEGAM:
-		dce_v11_0_disable_dce(adev);
-		break;
 	case CHIP_TOPAZ:
 #ifdef CONFIG_DRM_AMDGPU_SI
 	case CHIP_HAINAN:
@@ -627,7 +619,7 @@ static int amdgpu_vkms_resume(struct amdgpu_ip_block *ip_block)
 	return drm_mode_config_helper_resume(adev_to_drm(ip_block->adev));
 }
 
-static bool amdgpu_vkms_is_idle(void *handle)
+static bool amdgpu_vkms_is_idle(struct amdgpu_ip_block *ip_block)
 {
 	return true;
 }

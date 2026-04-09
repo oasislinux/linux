@@ -79,10 +79,10 @@ static void of_get_regulator_prot_limits(struct device_node *np,
 
 static int of_get_regulation_constraints(struct device *dev,
 					struct device_node *np,
-					struct regulator_init_data **init_data,
+					struct regulator_init_data *init_data,
 					const struct regulator_desc *desc)
 {
-	struct regulation_constraints *constraints = &(*init_data)->constraints;
+	struct regulation_constraints *constraints = &init_data->constraints;
 	struct regulator_state *suspend_state;
 	struct device_node *suspend_np;
 	unsigned int mode;
@@ -359,7 +359,7 @@ struct regulator_init_data *of_get_regulator_init_data(struct device *dev,
 	if (!init_data)
 		return NULL; /* Out of memory? */
 
-	if (of_get_regulation_constraints(dev, node, &init_data, desc))
+	if (of_get_regulation_constraints(dev, node, init_data, desc))
 		return NULL;
 
 	return init_data;
@@ -696,6 +696,27 @@ struct regulator *_of_regulator_get(struct device *dev, struct device_node *node
 	r = of_regulator_dev_lookup(dev, node, id);
 	return _regulator_get_common(r, dev, id, get_type);
 }
+
+/**
+ * of_regulator_get - get regulator via device tree lookup
+ * @dev: device used for dev_printk() messages
+ * @node: device node for regulator "consumer"
+ * @id: Supply name
+ *
+ * Return: pointer to struct regulator corresponding to the regulator producer,
+ *	   or PTR_ERR() encoded error number.
+ *
+ * This is intended for use by consumers that want to get a regulator
+ * supply directly from a device node. This will _not_ consider supply
+ * aliases. See regulator_dev_lookup().
+ */
+struct regulator *of_regulator_get(struct device *dev,
+					    struct device_node *node,
+					    const char *id)
+{
+	return _of_regulator_get(dev, node, id, NORMAL_GET);
+}
+EXPORT_SYMBOL_GPL(of_regulator_get);
 
 /**
  * of_regulator_get_optional - get optional regulator via device tree lookup

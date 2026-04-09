@@ -1123,7 +1123,7 @@ static DEF_SCSI_QCMD(ips_queue)
 /*   Set bios geometry for the controller                                   */
 /*                                                                          */
 /****************************************************************************/
-static int ips_biosparam(struct scsi_device *sdev, struct block_device *bdev,
+static int ips_biosparam(struct scsi_device *sdev, struct gendisk *unused,
 			 sector_t capacity, int geom[])
 {
 	ips_ha_t *ha = (ips_ha_t *) sdev->host->hostdata;
@@ -3631,8 +3631,8 @@ ips_send_cmd(ips_ha_t * ha, ips_scb_t * scb)
 
 			break;
 
-		case RESERVE:
-		case RELEASE:
+		case RESERVE_6:
+		case RELEASE_6:
 			scb->scsi_cmd->result = DID_OK << 16;
 			break;
 
@@ -3899,8 +3899,8 @@ ips_chkstatus(ips_ha_t * ha, IPS_STATUS * pstatus)
 			case WRITE_6:
 			case READ_10:
 			case WRITE_10:
-			case RESERVE:
-			case RELEASE:
+			case RESERVE_6:
+			case RELEASE_6:
 				break;
 
 			case MODE_SENSE:

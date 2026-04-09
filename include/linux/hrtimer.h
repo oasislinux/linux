@@ -2,7 +2,7 @@
 /*
  *  hrtimers - High-resolution kernel timers
  *
- *   Copyright(C) 2005, Thomas Gleixner <tglx@linutronix.de>
+ *   Copyright(C) 2005, Linutronix GmbH, Thomas Gleixner <tglx@kernel.org>
  *   Copyright(C) 2005, Red Hat, Inc., Ingo Molnar
  *
  *  data type definitions, declarations, prototypes
@@ -154,14 +154,11 @@ static inline s64 hrtimer_get_expires_ns(const struct hrtimer *timer)
 	return ktime_to_ns(timer->node.expires);
 }
 
+ktime_t hrtimer_cb_get_time(const struct hrtimer *timer);
+
 static inline ktime_t hrtimer_expires_remaining(const struct hrtimer *timer)
 {
-	return ktime_sub(timer->node.expires, timer->base->get_time());
-}
-
-static inline ktime_t hrtimer_cb_get_time(struct hrtimer *timer)
-{
-	return timer->base->get_time();
+	return ktime_sub(timer->node.expires, hrtimer_cb_get_time(timer));
 }
 
 static inline int hrtimer_is_hres_active(struct hrtimer *timer)
@@ -200,8 +197,7 @@ __hrtimer_expires_remaining_adjusted(const struct hrtimer *timer, ktime_t now)
 static inline ktime_t
 hrtimer_expires_remaining_adjusted(const struct hrtimer *timer)
 {
-	return __hrtimer_expires_remaining_adjusted(timer,
-						    timer->base->get_time());
+	return __hrtimer_expires_remaining_adjusted(timer, hrtimer_cb_get_time(timer));
 }
 
 #ifdef CONFIG_TIMERFD
@@ -223,11 +219,14 @@ static inline void hrtimer_cancel_wait_running(struct hrtimer *timer)
 }
 #endif
 
+static inline enum hrtimer_restart hrtimer_dummy_timeout(struct hrtimer *unused)
+{
+	return HRTIMER_NORESTART;
+}
+
 /* Exported timer functions: */
 
 /* Initialize timers: */
-extern void hrtimer_init(struct hrtimer *timer, clockid_t which_clock,
-			 enum hrtimer_mode mode);
 extern void hrtimer_setup(struct hrtimer *timer, enum hrtimer_restart (*function)(struct hrtimer *),
 			  clockid_t clock_id, enum hrtimer_mode mode);
 extern void hrtimer_setup_on_stack(struct hrtimer *timer,
@@ -333,6 +332,7 @@ static inline int hrtimer_callback_running(struct hrtimer *timer)
 static inline void hrtimer_update_function(struct hrtimer *timer,
 					   enum hrtimer_restart (*function)(struct hrtimer *))
 {
+#ifdef CONFIG_PROVE_LOCKING
 	guard(raw_spinlock_irqsave)(&timer->base->cpu_base->lock);
 
 	if (WARN_ON_ONCE(hrtimer_is_queued(timer)))
@@ -340,8 +340,8 @@ static inline void hrtimer_update_function(struct hrtimer *timer,
 
 	if (WARN_ON_ONCE(!function))
 		return;
-
-	timer->function = function;
+#endif
+	ACCESS_PRIVATE(timer, function) = function;
 }
 
 /* Forward a hrtimer so it expires after now: */
@@ -359,7 +359,7 @@ hrtimer_forward(struct hrtimer *timer, ktime_t now, ktime_t interval);
 static inline u64 hrtimer_forward_now(struct hrtimer *timer,
 				      ktime_t interval)
 {
-	return hrtimer_forward(timer, timer->base->get_time(), interval);
+	return hrtimer_forward(timer, hrtimer_cb_get_time(timer), interval);
 }
 
 /* Precise sleep: */

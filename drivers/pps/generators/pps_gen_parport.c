@@ -80,8 +80,7 @@ static enum hrtimer_restart hrtimer_event(struct hrtimer *timer)
 	/* check if we are late */
 	if (expire_time.tv_sec != ts1.tv_sec || ts1.tv_nsec > lim) {
 		local_irq_restore(flags);
-		pr_err("we are late this time %lld.%09ld\n",
-				(s64)ts1.tv_sec, ts1.tv_nsec);
+		pr_err("we are late this time %ptSp\n", &ts1);
 		goto done;
 	}
 
@@ -208,8 +207,7 @@ static void parport_attach(struct parport *port)
 
 	calibrate_port(&device);
 
-	hrtimer_init(&device.timer, CLOCK_REALTIME, HRTIMER_MODE_ABS);
-	device.timer.function = hrtimer_event;
+	hrtimer_setup(&device.timer, hrtimer_event, CLOCK_REALTIME, HRTIMER_MODE_ABS);
 	hrtimer_start(&device.timer, next_intr_time(&device), HRTIMER_MODE_ABS);
 
 	return;

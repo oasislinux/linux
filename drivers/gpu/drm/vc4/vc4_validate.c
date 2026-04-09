@@ -43,6 +43,8 @@
  * to use) happens.
  */
 
+#include <drm/drm_print.h>
+
 #include "uapi/drm/vc4_drm.h"
 #include "vc4_drv.h"
 #include "vc4_packet.h"
@@ -283,9 +285,6 @@ validate_indexed_prim_list(VALIDATE_ARGS)
 	ib = vc4_use_handle(exec, 0);
 	if (!ib)
 		return -EINVAL;
-
-	exec->bin_dep_seqno = max(exec->bin_dep_seqno,
-				  to_vc4_bo(&ib->base)->write_seqno);
 
 	if (offset > ib->base.size ||
 	    (ib->base.size - offset) / index_size < length) {
@@ -738,11 +737,6 @@ reloc_tex(struct vc4_exec_info *exec,
 
 	*validated_p0 = tex->dma_addr + p0;
 
-	if (is_cs) {
-		exec->bin_dep_seqno = max(exec->bin_dep_seqno,
-					  to_vc4_bo(&tex->base)->write_seqno);
-	}
-
 	return true;
  fail:
 	DRM_INFO("Texture p0 at %d: 0x%08x\n", sample->p_offset[0], p0);
@@ -903,9 +897,6 @@ validate_gl_shader_rec(struct drm_device *dev,
 		uint32_t attr_size = *(uint8_t *)(pkt_u + o + 4) + 1;
 		uint32_t stride = *(uint8_t *)(pkt_u + o + 5);
 		uint32_t max_index;
-
-		exec->bin_dep_seqno = max(exec->bin_dep_seqno,
-					  to_vc4_bo(&vbo->base)->write_seqno);
 
 		if (state->addr & 0x8)
 			stride |= (*(uint32_t *)(pkt_u + 100 + i * 4)) & ~0xff;

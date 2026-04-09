@@ -1766,7 +1766,7 @@ static int mtk_dp_parse_capabilities(struct mtk_dp *mtk_dp)
 
 	ret = drm_dp_dpcd_readb(&mtk_dp->aux, DP_MSTM_CAP, &val);
 	if (ret < 1) {
-		drm_err(mtk_dp->drm_dev, "Read mstm cap failed\n");
+		dev_err(mtk_dp->dev, "Read mstm cap failed: %zd\n", ret);
 		return ret == 0 ? -EIO : ret;
 	}
 
@@ -1776,7 +1776,7 @@ static int mtk_dp_parse_capabilities(struct mtk_dp *mtk_dp)
 					DP_DEVICE_SERVICE_IRQ_VECTOR_ESI0,
 					&val);
 		if (ret < 1) {
-			drm_err(mtk_dp->drm_dev, "Read irq vector failed\n");
+			dev_err(mtk_dp->dev, "Read irq vector failed: %zd\n", ret);
 			return ret == 0 ? -EIO : ret;
 		}
 
@@ -2059,7 +2059,7 @@ static int mtk_dp_wait_hpd_asserted(struct drm_dp_aux *mtk_aux, unsigned long wa
 
 	ret = mtk_dp_parse_capabilities(mtk_dp);
 	if (ret) {
-		drm_err(mtk_dp->drm_dev, "Can't parse capabilities\n");
+		dev_err(mtk_dp->dev, "Can't parse capabilities: %d\n", ret);
 		return ret;
 	}
 
@@ -2087,6 +2087,7 @@ static int mtk_dp_dt_parse(struct mtk_dp *mtk_dp,
 	endpoint = of_graph_get_endpoint_by_regs(pdev->dev.of_node, 1, -1);
 	len = of_property_count_elems_of_size(endpoint,
 					      "data-lanes", sizeof(u32));
+	of_node_put(endpoint);
 	if (len < 0 || len > 4 || len == 3) {
 		dev_err(dev, "invalid data lane size: %d\n", len);
 		return -EINVAL;
@@ -2118,7 +2119,8 @@ static void mtk_dp_update_plugged_status(struct mtk_dp *mtk_dp)
 	mutex_unlock(&mtk_dp->update_plugged_status_lock);
 }
 
-static enum drm_connector_status mtk_dp_bdg_detect(struct drm_bridge *bridge)
+static enum drm_connector_status
+mtk_dp_bdg_detect(struct drm_bridge *bridge, struct drm_connector *connector)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_from_bridge(bridge);
 	enum drm_connector_status ret = connector_status_disconnected;
@@ -2287,6 +2289,7 @@ static void mtk_dp_poweroff(struct mtk_dp *mtk_dp)
 }
 
 static int mtk_dp_bridge_attach(struct drm_bridge *bridge,
+				struct drm_encoder *encoder,
 				enum drm_bridge_attach_flags flags)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_from_bridge(bridge);
@@ -2310,7 +2313,7 @@ static int mtk_dp_bridge_attach(struct drm_bridge *bridge,
 		goto err_aux_register;
 
 	if (mtk_dp->next_bridge) {
-		ret = drm_bridge_attach(bridge->encoder, mtk_dp->next_bridge,
+		ret = drm_bridge_attach(encoder, mtk_dp->next_bridge,
 					&mtk_dp->bridge, flags);
 		if (ret) {
 			drm_warn(mtk_dp->drm_dev,
@@ -2350,12 +2353,12 @@ static void mtk_dp_bridge_detach(struct drm_bridge *bridge)
 }
 
 static void mtk_dp_bridge_atomic_enable(struct drm_bridge *bridge,
-					struct drm_bridge_state *old_state)
+					struct drm_atomic_state *state)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_from_bridge(bridge);
 	int ret;
 
-	mtk_dp->conn = drm_atomic_get_new_connector_for_encoder(old_state->base.state,
+	mtk_dp->conn = drm_atomic_get_new_connector_for_encoder(state,
 								bridge->encoder);
 	if (!mtk_dp->conn) {
 		drm_err(mtk_dp->drm_dev,
@@ -2400,7 +2403,7 @@ power_off_aux:
 }
 
 static void mtk_dp_bridge_atomic_disable(struct drm_bridge *bridge,
-					 struct drm_bridge_state *old_state)
+					 struct drm_atomic_state *state)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_from_bridge(bridge);
 
@@ -2568,7 +2571,7 @@ static const struct drm_bridge_funcs mtk_dp_bridge_funcs = {
 
 static void mtk_dp_debounce_timer(struct timer_list *t)
 {
-	struct mtk_dp *mtk_dp = from_timer(mtk_dp, t, debounce_timer);
+	struct mtk_dp *mtk_dp = timer_container_of(mtk_dp, t, debounce_timer);
 
 	mtk_dp->need_debounce = true;
 }
@@ -2724,9 +2727,10 @@ static int mtk_dp_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	mtk_dp = devm_kzalloc(dev, sizeof(*mtk_dp), GFP_KERNEL);
-	if (!mtk_dp)
-		return -ENOMEM;
+	mtk_dp = devm_drm_bridge_alloc(dev, struct mtk_dp, bridge,
+				       &mtk_dp_bridge_funcs);
+	if (IS_ERR(mtk_dp))
+		return PTR_ERR(mtk_dp);
 
 	mtk_dp->dev = dev;
 	mtk_dp->data = (struct mtk_dp_data *)of_device_get_match_data(dev);
@@ -2784,7 +2788,6 @@ static int mtk_dp_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	mtk_dp->bridge.funcs = &mtk_dp_bridge_funcs;
 	mtk_dp->bridge.of_node = dev->of_node;
 	mtk_dp->bridge.type = mtk_dp->data->bridge_type;
 
@@ -2847,7 +2850,7 @@ static void mtk_dp_remove(struct platform_device *pdev)
 	pm_runtime_put(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 	if (mtk_dp->data->bridge_type != DRM_MODE_CONNECTOR_eDP)
-		del_timer_sync(&mtk_dp->debounce_timer);
+		timer_delete_sync(&mtk_dp->debounce_timer);
 	platform_device_unregister(mtk_dp->phy_dev);
 	if (mtk_dp->audio_pdev)
 		platform_device_unregister(mtk_dp->audio_pdev);

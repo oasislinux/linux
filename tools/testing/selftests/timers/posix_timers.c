@@ -7,6 +7,7 @@
  * Kernel loop code stolen from Steven Rostedt <srostedt@redhat.com>
  */
 #define _GNU_SOURCE
+#include <sys/prctl.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <stdio.h>
@@ -17,8 +18,9 @@
 #include <time.h>
 #include <include/vdso/time64.h>
 #include <pthread.h>
+#include <stdbool.h>
 
-#include "../kselftest.h"
+#include "kselftest.h"
 
 #define DELAY 2
 
@@ -599,13 +601,89 @@ static void check_overrun(int which, const char *name)
 			 "check_overrun %s\n", name);
 }
 
+#include <sys/syscall.h>
+
+static int do_timer_create(int *id)
+{
+	return syscall(__NR_timer_create, CLOCK_MONOTONIC, NULL, id);
+}
+
+static int do_timer_delete(int id)
+{
+	return syscall(__NR_timer_delete, id);
+}
+
+#ifndef PR_TIMER_CREATE_RESTORE_IDS
+# define PR_TIMER_CREATE_RESTORE_IDS		77
+# define PR_TIMER_CREATE_RESTORE_IDS_OFF	 0
+# define PR_TIMER_CREATE_RESTORE_IDS_ON		 1
+# define PR_TIMER_CREATE_RESTORE_IDS_GET	 2
+#endif
+
+static void check_timer_create_exact(void)
+{
+	int id;
+
+	if (prctl(PR_TIMER_CREATE_RESTORE_IDS, PR_TIMER_CREATE_RESTORE_IDS_ON, 0, 0, 0)) {
+		switch (errno) {
+		case EINVAL:
+			ksft_test_result_skip("check timer create exact, not supported\n");
+			return;
+		default:
+			ksft_test_result_skip("check timer create exact, errno = %d\n", errno);
+			return;
+		}
+	}
+
+	if (prctl(PR_TIMER_CREATE_RESTORE_IDS, PR_TIMER_CREATE_RESTORE_IDS_GET, 0, 0, 0) != 1)
+		fatal_error(NULL, "prctl(GET) failed\n");
+
+	id = 8;
+	if (do_timer_create(&id) < 0)
+		fatal_error(NULL, "timer_create()");
+
+	if (do_timer_delete(id))
+		fatal_error(NULL, "timer_delete()");
+
+	if (prctl(PR_TIMER_CREATE_RESTORE_IDS, PR_TIMER_CREATE_RESTORE_IDS_OFF, 0, 0, 0))
+		fatal_error(NULL, "prctl(OFF)");
+
+	if (prctl(PR_TIMER_CREATE_RESTORE_IDS, PR_TIMER_CREATE_RESTORE_IDS_GET, 0, 0, 0) != 0)
+		fatal_error(NULL, "prctl(GET) failed\n");
+
+	if (id != 8) {
+		ksft_test_result_fail("check timer create exact %d != 8\n", id);
+		return;
+	}
+
+	/* Validate that it went back to normal mode and allocates ID 9 */
+	if (do_timer_create(&id) < 0)
+		fatal_error(NULL, "timer_create()");
+
+	if (do_timer_delete(id))
+		fatal_error(NULL, "timer_delete()");
+
+	if (id == 9)
+		ksft_test_result_pass("check timer create exact\n");
+	else
+		ksft_test_result_fail("check timer create exact. Disabling failed.\n");
+}
+
 int main(int argc, char **argv)
 {
+	bool run_sig_ign_tests = ksft_min_kernel_version(6, 13);
+
 	ksft_print_header();
-	ksft_set_plan(18);
+	if (run_sig_ign_tests) {
+		ksft_set_plan(19);
+	} else {
+		ksft_set_plan(10);
+	}
 
 	ksft_print_msg("Testing posix timers. False negative may happen on CPU execution \n");
 	ksft_print_msg("based timers if other threads run on the CPU...\n");
+
+	check_timer_create_exact();
 
 	check_itimer(ITIMER_VIRTUAL, "ITIMER_VIRTUAL");
 	check_itimer(ITIMER_PROF, "ITIMER_PROF");
@@ -624,15 +702,20 @@ int main(int argc, char **argv)
 	check_timer_create(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
 	check_timer_distribution();
 
-	check_sig_ign(0);
-	check_sig_ign(1);
-	check_rearm();
-	check_delete();
-	check_sigev_none(CLOCK_MONOTONIC, "CLOCK_MONOTONIC");
-	check_sigev_none(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
-	check_gettime(CLOCK_MONOTONIC, "CLOCK_MONOTONIC");
-	check_gettime(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
-	check_gettime(CLOCK_THREAD_CPUTIME_ID, "CLOCK_THREAD_CPUTIME_ID");
+	if (run_sig_ign_tests) {
+		check_sig_ign(0);
+		check_sig_ign(1);
+		check_rearm();
+		check_delete();
+		check_sigev_none(CLOCK_MONOTONIC, "CLOCK_MONOTONIC");
+		check_sigev_none(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
+		check_gettime(CLOCK_MONOTONIC, "CLOCK_MONOTONIC");
+		check_gettime(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
+		check_gettime(CLOCK_THREAD_CPUTIME_ID, "CLOCK_THREAD_CPUTIME_ID");
+	} else {
+		ksft_print_msg("Skipping SIG_IGN tests on kernel < 6.13\n");
+	}
+
 	check_overrun(CLOCK_MONOTONIC, "CLOCK_MONOTONIC");
 	check_overrun(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
 	check_overrun(CLOCK_THREAD_CPUTIME_ID, "CLOCK_THREAD_CPUTIME_ID");

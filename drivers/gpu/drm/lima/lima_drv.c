@@ -310,7 +310,7 @@ static bool lima_read_block(struct lima_block_reader *reader,
 }
 
 static ssize_t lima_error_state_read(struct file *filp, struct kobject *kobj,
-				     struct bin_attribute *attr, char *buf,
+				     const struct bin_attribute *attr, char *buf,
 				     loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -336,7 +336,7 @@ static ssize_t lima_error_state_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t lima_error_state_write(struct file *file, struct kobject *kobj,
-				      struct bin_attribute *attr, char *buf,
+				      const struct bin_attribute *attr, char *buf,
 				      loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);

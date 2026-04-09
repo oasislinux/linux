@@ -28,6 +28,15 @@
 #include "scrub/newbt.h"
 
 /*
+ * This is the maximum number of deferred extent freeing item extents (EFIs)
+ * that we'll attach to a transaction without rolling the transaction to avoid
+ * overrunning a tr_itruncate reservation.  The newbt code should reserve
+ * exactly the correct number of blocks to rebuild the btree, so there should
+ * not be any excess blocks to free when committing a new btree.
+ */
+#define XREP_MAX_ITRUNCATE_EFIS	(128)
+
+/*
  * Estimate proper slack values for a btree that's being reloaded.
  *
  * Under most circumstances, we'll take whatever default loading value the
@@ -62,7 +71,7 @@ xrep_newbt_estimate_slack(
 		free = sc->sa.pag->pagf_freeblks;
 		sz = xfs_ag_block_count(sc->mp, pag_agno(sc->sa.pag));
 	} else {
-		free = percpu_counter_sum(&sc->mp->m_fdblocks);
+		free = xfs_sum_freecounter_raw(sc->mp, XC_FREE_BLOCKS);
 		sz = sc->mp->m_sb.sb_dblocks;
 	}
 

@@ -15,16 +15,17 @@ KBUILD_CFLAGS_MODULE += -fPIC
 KBUILD_AFLAGS	+= -m64
 KBUILD_CFLAGS	+= -m64
 KBUILD_CFLAGS	+= -fPIC
-LDFLAGS_vmlinux	:= -no-pie --emit-relocs --discard-none
+LDFLAGS_vmlinux	:= $(call ld-option,-no-pie)
 extra_tools	:= relocs
 aflags_dwarf	:= -Wa,-gdwarf-2
 KBUILD_AFLAGS_DECOMPRESSOR := $(CLANG_FLAGS) -m64 -D__ASSEMBLY__
 ifndef CONFIG_AS_IS_LLVM
 KBUILD_AFLAGS_DECOMPRESSOR += $(if $(CONFIG_DEBUG_INFO),$(aflags_dwarf))
 endif
-KBUILD_CFLAGS_DECOMPRESSOR := $(CLANG_FLAGS) -m64 -O2 -mpacked-stack -std=gnu11
+KBUILD_CFLAGS_DECOMPRESSOR := $(CLANG_FLAGS) -m64 -O2 -mpacked-stack -std=gnu11 -fms-extensions
 KBUILD_CFLAGS_DECOMPRESSOR += -DDISABLE_BRANCH_PROFILING -D__NO_FORTIFY
 KBUILD_CFLAGS_DECOMPRESSOR += -D__DECOMPRESSOR
+KBUILD_CFLAGS_DECOMPRESSOR += -Wno-pointer-sign
 KBUILD_CFLAGS_DECOMPRESSOR += -fno-delete-null-pointer-checks -msoft-float -mbackchain
 KBUILD_CFLAGS_DECOMPRESSOR += -fno-asynchronous-unwind-tables
 KBUILD_CFLAGS_DECOMPRESSOR += -ffreestanding
@@ -34,6 +35,7 @@ KBUILD_CFLAGS_DECOMPRESSOR += $(call cc-disable-warning, address-of-packed-membe
 KBUILD_CFLAGS_DECOMPRESSOR += $(if $(CONFIG_DEBUG_INFO),-g)
 KBUILD_CFLAGS_DECOMPRESSOR += $(if $(CONFIG_DEBUG_INFO_DWARF4), $(call cc-option, -gdwarf-4,))
 KBUILD_CFLAGS_DECOMPRESSOR += $(if $(CONFIG_CC_NO_ARRAY_BOUNDS),-Wno-array-bounds)
+KBUILD_CFLAGS_DECOMPRESSOR += $(if $(CONFIG_CC_IS_CLANG),-Wno-microsoft-anon-tag)
 
 UTS_MACHINE	:= s390x
 STACK_SIZE	:= $(if $(CONFIG_KASAN),65536,$(if $(CONFIG_KMSAN),65536,16384))
@@ -48,6 +50,7 @@ mflags-$(CONFIG_MARCH_Z13)    := -march=z13
 mflags-$(CONFIG_MARCH_Z14)    := -march=z14
 mflags-$(CONFIG_MARCH_Z15)    := -march=z15
 mflags-$(CONFIG_MARCH_Z16)    := -march=z16
+mflags-$(CONFIG_MARCH_Z17)    := -march=z17
 
 export CC_FLAGS_MARCH := $(mflags-y)
 
@@ -61,6 +64,7 @@ cflags-$(CONFIG_MARCH_Z13_TUNE)		+= -mtune=z13
 cflags-$(CONFIG_MARCH_Z14_TUNE)		+= -mtune=z14
 cflags-$(CONFIG_MARCH_Z15_TUNE)		+= -mtune=z15
 cflags-$(CONFIG_MARCH_Z16_TUNE)		+= -mtune=z16
+cflags-$(CONFIG_MARCH_Z17_TUNE)		+= -mtune=z17
 
 cflags-y += -Wa,-I$(srctree)/arch/$(ARCH)/include
 
@@ -84,6 +88,10 @@ ifdef CONFIG_EXPOLINE
   export CC_FLAGS_EXPOLINE
   cflags-y += $(CC_FLAGS_EXPOLINE) -DCC_USING_EXPOLINE
   aflags-y += -DCC_USING_EXPOLINE
+endif
+
+ifeq ($(CONFIG_STACKPROTECTOR),y)
+  KBUILD_CFLAGS += -mstack-protector-guard=global -mstack-protector-guard-record
 endif
 
 ifdef CONFIG_FUNCTION_TRACER
@@ -131,10 +139,9 @@ zfcpdump:
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 
 archheaders:
-	$(Q)$(MAKE) $(build)=$(syscalls) uapi
+	$(Q)$(MAKE) $(build)=$(syscalls) all
 
 archprepare:
-	$(Q)$(MAKE) $(build)=$(syscalls) kapi
 	$(Q)$(MAKE) $(build)=$(tools) kapi $(extra_tools)
 ifeq ($(KBUILD_EXTMOD),)
 # We need to generate vdso-offsets.h before compiling certain files in kernel/.
@@ -145,12 +152,9 @@ ifeq ($(KBUILD_EXTMOD),)
 # this hack.
 prepare: vdso_prepare
 vdso_prepare: prepare0
-	$(Q)$(MAKE) $(build)=arch/s390/kernel/vdso64 include/generated/vdso64-offsets.h
-	$(if $(CONFIG_COMPAT),$(Q)$(MAKE) \
-		$(build)=arch/s390/kernel/vdso32 include/generated/vdso32-offsets.h)
+	$(Q)$(MAKE) $(build)=arch/s390/kernel/vdso include/generated/vdso-offsets.h
 
-vdso-install-y			+= arch/s390/kernel/vdso64/vdso64.so.dbg
-vdso-install-$(CONFIG_COMPAT)	+= arch/s390/kernel/vdso32/vdso32.so.dbg
+vdso-install-y			+= arch/s390/kernel/vdso/vdso.so.dbg
 
 endif
 

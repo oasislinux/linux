@@ -1195,7 +1195,7 @@ static void test_tailcall_hierarchy_count(const char *which, bool test_fentry,
 					  bool test_fexit,
 					  bool test_fentry_entry)
 {
-	int err, map_fd, prog_fd, main_data_fd, fentry_data_fd, fexit_data_fd, i, val;
+	int err, map_fd, prog_fd, main_data_fd, fentry_data_fd = 0, fexit_data_fd = 0, i, val;
 	struct bpf_object *obj = NULL, *fentry_obj = NULL, *fexit_obj = NULL;
 	struct bpf_link *fentry_link = NULL, *fexit_link = NULL;
 	struct bpf_program *prog, *fentry_prog;
@@ -1600,6 +1600,7 @@ static void test_tailcall_bpf2bpf_freplace(void)
 		goto out;
 
 	err = bpf_link__destroy(freplace_link);
+	freplace_link = NULL;
 	if (!ASSERT_OK(err, "destroy link"))
 		goto out;
 

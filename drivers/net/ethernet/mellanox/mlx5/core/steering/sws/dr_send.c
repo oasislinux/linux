@@ -1049,12 +1049,6 @@ static int dr_prepare_qp_to_rts(struct mlx5dr_domain *dmn)
 	return 0;
 }
 
-static void dr_cq_complete(struct mlx5_core_cq *mcq,
-			   struct mlx5_eqe *eqe)
-{
-	pr_err("CQ completion CQ: #%u\n", mcq->cqn);
-}
-
 static struct mlx5dr_cq *dr_create_cq(struct mlx5_core_dev *mdev,
 				      struct mlx5_uars_page *uar,
 				      size_t ncqe)
@@ -1089,6 +1083,13 @@ static struct mlx5dr_cq *dr_create_cq(struct mlx5_core_dev *mdev,
 		cqe->op_own = MLX5_CQE_INVALID << 4 | MLX5_CQE_OWNER_MASK;
 	}
 
+	cq->mcq.cqe_sz = 64;
+	cq->mcq.set_ci_db = cq->wq_ctrl.db.db;
+	cq->mcq.arm_db = cq->wq_ctrl.db.db + 1;
+	*cq->mcq.set_ci_db = 0;
+	cq->mcq.vector = 0;
+	cq->mdev = mdev;
+
 	inlen = MLX5_ST_SZ_BYTES(create_cq_in) +
 		sizeof(u64) * cq->wq_ctrl.buf.npages;
 	in = kvzalloc(inlen, GFP_KERNEL);
@@ -1112,27 +1113,11 @@ static struct mlx5dr_cq *dr_create_cq(struct mlx5_core_dev *mdev,
 	pas = (__be64 *)MLX5_ADDR_OF(create_cq_in, in, pas);
 	mlx5_fill_page_frag_array(&cq->wq_ctrl.buf, pas);
 
-	cq->mcq.comp  = dr_cq_complete;
-
 	err = mlx5_core_create_cq(mdev, &cq->mcq, in, inlen, out, sizeof(out));
 	kvfree(in);
 
 	if (err)
 		goto err_cqwq;
-
-	cq->mcq.cqe_sz = 64;
-	cq->mcq.set_ci_db = cq->wq_ctrl.db.db;
-	cq->mcq.arm_db = cq->wq_ctrl.db.db + 1;
-	*cq->mcq.set_ci_db = 0;
-
-	/* set no-zero value, in order to avoid the HW to run db-recovery on
-	 * CQ that used in polling mode.
-	 */
-	*cq->mcq.arm_db = cpu_to_be32(2 << 28);
-
-	cq->mcq.vector = 0;
-	cq->mcq.uar = uar;
-	cq->mdev = mdev;
 
 	return cq;
 
@@ -1330,37 +1315,4 @@ void mlx5dr_send_ring_free(struct mlx5dr_domain *dmn,
 	kfree(send_ring->buf);
 	kfree(send_ring->sync_buff);
 	kfree(send_ring);
-}
-
-int mlx5dr_send_ring_force_drain(struct mlx5dr_domain *dmn)
-{
-	struct mlx5dr_send_ring *send_ring = dmn->send_ring;
-	struct postsend_info send_info = {};
-	u8 data[DR_STE_SIZE];
-	int num_of_sends_req;
-	int ret;
-	int i;
-
-	/* Sending this amount of requests makes sure we will get drain */
-	num_of_sends_req = send_ring->signal_th * TH_NUMS_TO_DRAIN / 2;
-
-	/* Send fake requests forcing the last to be signaled */
-	send_info.write.addr = (uintptr_t)data;
-	send_info.write.length = DR_STE_SIZE;
-	send_info.write.lkey = 0;
-	/* Using the sync_mr in order to write/read */
-	send_info.remote_addr = (uintptr_t)send_ring->sync_mr->addr;
-	send_info.rkey = send_ring->sync_mr->mkey;
-
-	for (i = 0; i < num_of_sends_req; i++) {
-		ret = dr_postsend_icm_data(dmn, &send_info);
-		if (ret)
-			return ret;
-	}
-
-	spin_lock(&send_ring->lock);
-	ret = dr_handle_pending_wc(dmn, send_ring);
-	spin_unlock(&send_ring->lock);
-
-	return ret;
 }

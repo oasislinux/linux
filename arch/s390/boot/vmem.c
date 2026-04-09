@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #define boot_fmt(fmt) "vmem: " fmt
+#include <linux/cpufeature.h>
 #include <linux/sched/task.h>
 #include <linux/pgtable.h>
 #include <linux/kasan.h>
@@ -10,11 +11,11 @@
 #include <asm/ctlreg.h>
 #include <asm/physmem_info.h>
 #include <asm/maccess.h>
+#include <asm/machine.h>
 #include <asm/abs_lowcore.h>
 #include "decompressor.h"
 #include "boot.h"
 
-#define INVALID_PHYS_ADDR (~(phys_addr_t)0)
 struct ctlreg __bootdata_preserved(s390_invalid_asce);
 
 #ifdef CONFIG_PROC_FS
@@ -243,22 +244,10 @@ static void *boot_crst_alloc(unsigned long val)
 
 static pte_t *boot_pte_alloc(void)
 {
-	static void *pte_leftover;
 	pte_t *pte;
 
-	/*
-	 * handling pte_leftovers this way helps to avoid memory fragmentation
-	 * during POPULATE_KASAN_MAP_SHADOW when EDAT is off
-	 */
-	if (!pte_leftover) {
-		pte_leftover = (void *)physmem_alloc_or_die(RR_VMEM, PAGE_SIZE, PAGE_SIZE);
-		pte = pte_leftover + _PAGE_TABLE_SIZE;
-		__arch_set_page_dat(pte, 1);
-	} else {
-		pte = pte_leftover;
-		pte_leftover = NULL;
-	}
-
+	pte = (void *)physmem_alloc_or_die(RR_VMEM, PAGE_SIZE, PAGE_SIZE);
+	__arch_set_page_dat(pte, 1);
 	memset64((u64 *)pte, _PAGE_INVALID, PTRS_PER_PTE);
 	return pte;
 }
@@ -314,7 +303,7 @@ static unsigned long try_get_large_pud_pa(pud_t *pu_dir, unsigned long addr, uns
 {
 	unsigned long pa, size = end - addr;
 
-	if (!machine.has_edat2 || !large_page_mapping_allowed(mode) ||
+	if (!cpu_has_edat2() || !large_page_mapping_allowed(mode) ||
 	    !IS_ALIGNED(addr, PUD_SIZE) || (size < PUD_SIZE))
 		return INVALID_PHYS_ADDR;
 
@@ -330,7 +319,7 @@ static unsigned long try_get_large_pmd_pa(pmd_t *pm_dir, unsigned long addr, uns
 {
 	unsigned long pa, size = end - addr;
 
-	if (!machine.has_edat1 || !large_page_mapping_allowed(mode) ||
+	if (!cpu_has_edat1() || !large_page_mapping_allowed(mode) ||
 	    !IS_ALIGNED(addr, PMD_SIZE) || (size < PMD_SIZE))
 		return INVALID_PHYS_ADDR;
 
@@ -516,7 +505,7 @@ void setup_vmem(unsigned long kernel_start, unsigned long kernel_end, unsigned l
 	__arch_set_page_dat((void *)swapper_pg_dir, 1UL << CRST_ALLOC_ORDER);
 	__arch_set_page_dat((void *)invalid_pg_dir, 1UL << CRST_ALLOC_ORDER);
 
-	if (relocate_lowcore)
+	if (machine_has_relocated_lowcore())
 		lowcore_address = LOWCORE_ALT_ADDRESS;
 
 	/*
@@ -528,6 +517,9 @@ void setup_vmem(unsigned long kernel_start, unsigned long kernel_end, unsigned l
 			 lowcore_address + sizeof(struct lowcore),
 			 POPULATE_LOWCORE);
 	for_each_physmem_usable_range(i, &start, &end) {
+		/* Do not map lowcore with identity mapping */
+		if (!start)
+			start = sizeof(struct lowcore);
 		pgtable_populate((unsigned long)__identity_va(start),
 				 (unsigned long)__identity_va(end),
 				 POPULATE_IDENTITY);

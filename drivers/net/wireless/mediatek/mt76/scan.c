@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (C) 2024 Felix Fietkau <nbd@nbd.name>
  */
@@ -16,11 +16,13 @@ static void mt76_scan_complete(struct mt76_dev *dev, bool abort)
 
 	clear_bit(MT76_SCANNING, &phy->state);
 
-	if (dev->scan.chan && phy->main_chandef.chan)
+	if (dev->scan.chan && phy->main_chandef.chan &&
+	    !test_bit(MT76_MCU_RESET, &dev->phy.state))
 		mt76_set_channel(phy, &phy->main_chandef, false);
 	mt76_put_vif_phy_link(phy, dev->scan.vif, dev->scan.mlink);
 	memset(&dev->scan, 0, sizeof(dev->scan));
-	ieee80211_scan_completed(phy->hw, &info);
+	if (!test_bit(MT76_MCU_RESET, &dev->phy.state))
+		ieee80211_scan_completed(phy->hw, &info);
 }
 
 void mt76_abort_scan(struct mt76_dev *dev)
@@ -28,6 +30,7 @@ void mt76_abort_scan(struct mt76_dev *dev)
 	cancel_delayed_work_sync(&dev->scan_work);
 	mt76_scan_complete(dev, true);
 }
+EXPORT_SYMBOL_GPL(mt76_abort_scan);
 
 static void
 mt76_scan_send_probe(struct mt76_dev *dev, struct cfg80211_ssid *ssid)
@@ -52,11 +55,6 @@ mt76_scan_send_probe(struct mt76_dev *dev, struct cfg80211_ssid *ssid)
 		ether_addr_copy(hdr->addr3, req->bssid);
 	}
 
-	info = IEEE80211_SKB_CB(skb);
-	if (req->no_cck)
-		info->flags |= IEEE80211_TX_CTL_NO_CCK_RATE;
-	info->control.flags |= IEEE80211_TX_CTRL_DONT_USE_RATE_MASK;
-
 	if (req->ie_len)
 		skb_put_data(skb, req->ie, req->ie_len);
 
@@ -64,10 +62,20 @@ mt76_scan_send_probe(struct mt76_dev *dev, struct cfg80211_ssid *ssid)
 	skb_set_queue_mapping(skb, IEEE80211_AC_VO);
 
 	rcu_read_lock();
-	if (ieee80211_tx_prepare_skb(phy->hw, vif, skb, band, NULL))
-		mt76_tx(phy, NULL, mvif->wcid, skb);
-	else
+
+	if (!ieee80211_tx_prepare_skb(phy->hw, vif, skb, band, NULL)) {
 		ieee80211_free_txskb(phy->hw, skb);
+		goto out;
+	}
+
+	info = IEEE80211_SKB_CB(skb);
+	if (req->no_cck)
+		info->flags |= IEEE80211_TX_CTL_NO_CCK_RATE;
+	info->control.flags |= IEEE80211_TX_CTRL_DONT_USE_RATE_MASK;
+
+	mt76_tx(phy, NULL, mvif->wcid, skb);
+
+out:
 	rcu_read_unlock();
 }
 
@@ -107,9 +115,6 @@ void mt76_scan_work(struct work_struct *work)
 	local_bh_enable();
 
 out:
-	if (!duration)
-		return;
-
 	if (dev->scan.chan)
 		duration = max_t(int, duration,
 			         msecs_to_jiffies(req->duration +
@@ -134,7 +139,8 @@ int mt76_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 
 	mutex_lock(&dev->mutex);
 
-	if (dev->scan.req || phy->roc_vif) {
+	if (dev->scan.req || phy->roc_vif ||
+	    test_bit(MT76_MCU_RESET, &dev->phy.state)) {
 		ret = -EBUSY;
 		goto out;
 	}

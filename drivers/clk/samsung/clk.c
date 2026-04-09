@@ -10,9 +10,9 @@
 
 #include <linux/slab.h>
 #include <linux/clkdev.h>
-#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/of_address.h>
 #include <linux/syscore_ops.h>
 
@@ -74,12 +74,12 @@ struct samsung_clk_provider * __init samsung_clk_init(struct device *dev,
 	if (!ctx)
 		panic("could not allocate clock provider context.\n");
 
+	ctx->clk_data.num = nr_clks;
 	for (i = 0; i < nr_clks; ++i)
 		ctx->clk_data.hws[i] = ERR_PTR(-ENOENT);
 
 	ctx->dev = dev;
 	ctx->reg_base = base;
-	ctx->clk_data.num = nr_clks;
 	spin_lock_init(&ctx->lock);
 
 	return ctx;
@@ -271,7 +271,7 @@ void __init samsung_clk_of_register_fixed_ext(struct samsung_clk_provider *ctx,
 }
 
 #ifdef CONFIG_PM_SLEEP
-static int samsung_clk_suspend(void)
+static int samsung_clk_suspend(void *data)
 {
 	struct samsung_clock_reg_cache *reg_cache;
 
@@ -284,7 +284,7 @@ static int samsung_clk_suspend(void)
 	return 0;
 }
 
-static void samsung_clk_resume(void)
+static void samsung_clk_resume(void *data)
 {
 	struct samsung_clock_reg_cache *reg_cache;
 
@@ -293,9 +293,13 @@ static void samsung_clk_resume(void)
 				reg_cache->rd_num);
 }
 
-static struct syscore_ops samsung_clk_syscore_ops = {
+static const struct syscore_ops samsung_clk_syscore_ops = {
 	.suspend = samsung_clk_suspend,
 	.resume = samsung_clk_resume,
+};
+
+static struct syscore samsung_clk_syscore = {
+	.ops = &samsung_clk_syscore_ops,
 };
 
 void samsung_clk_extended_sleep_init(void __iomem *reg_base,
@@ -316,7 +320,7 @@ void samsung_clk_extended_sleep_init(void __iomem *reg_base,
 		panic("could not allocate register dump storage.\n");
 
 	if (list_empty(&clock_reg_cache_list))
-		register_syscore_ops(&samsung_clk_syscore_ops);
+		register_syscore(&samsung_clk_syscore);
 
 	reg_cache->reg_base = reg_base;
 	reg_cache->rd_num = nr_rdump;

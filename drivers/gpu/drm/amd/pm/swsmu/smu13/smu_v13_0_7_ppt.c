@@ -579,8 +579,6 @@ static int smu_v13_0_7_set_default_dpm_table(struct smu_context *smu)
 	PPTable_t *driver_ppt = smu->smu_table.driver_pptable;
 	SkuTable_t *skutable = &driver_ppt->SkuTable;
 	struct smu_13_0_dpm_table *dpm_table;
-	struct smu_13_0_pcie_table *pcie_table;
-	uint32_t link_level;
 	int ret = 0;
 
 	/* socclk dpm table setup */
@@ -687,24 +685,6 @@ static int smu_v13_0_7_set_default_dpm_table(struct smu_context *smu)
 		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
 
-	/* lclk dpm table setup */
-	pcie_table = &dpm_context->dpm_tables.pcie_table;
-	pcie_table->num_of_link_levels = 0;
-	for (link_level = 0; link_level < NUM_LINK_LEVELS; link_level++) {
-		if (!skutable->PcieGenSpeed[link_level] &&
-		    !skutable->PcieLaneCount[link_level] &&
-		    !skutable->LclkFreq[link_level])
-			continue;
-
-		pcie_table->pcie_gen[pcie_table->num_of_link_levels] =
-					skutable->PcieGenSpeed[link_level];
-		pcie_table->pcie_lane[pcie_table->num_of_link_levels] =
-					skutable->PcieLaneCount[link_level];
-		pcie_table->clk_freq[pcie_table->num_of_link_levels] =
-					skutable->LclkFreq[link_level];
-		pcie_table->num_of_link_levels++;
-	}
-
 	/* dcefclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.dcef_table;
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_DCN_BIT)) {
@@ -806,6 +786,10 @@ static int smu_v13_0_7_get_smu_metrics_data(struct smu_context *smu,
 			*value = metrics->AverageMemclkFrequencyPostDs;
 		else
 			*value = metrics->AverageMemclkFrequencyPreDs;
+		break;
+	case METRICS_AVERAGE_VCNACTIVITY:
+		*value = max(metrics->Vcn0ActivityPercentage,
+			     metrics->Vcn1ActivityPercentage);
 		break;
 	case METRICS_AVERAGE_VCLK:
 		*value = metrics->AverageVclk0Frequency;
@@ -948,6 +932,12 @@ static int smu_v13_0_7_read_sensor(struct smu_context *smu,
 	case AMDGPU_PP_SENSOR_GPU_LOAD:
 		ret = smu_v13_0_7_get_smu_metrics_data(smu,
 						       METRICS_AVERAGE_GFXACTIVITY,
+						       (uint32_t *)data);
+		*size = 4;
+		break;
+	case AMDGPU_PP_SENSOR_VCN_LOAD:
+		ret = smu_v13_0_7_get_smu_metrics_data(smu,
+						       METRICS_AVERAGE_VCNACTIVITY,
 						       (uint32_t *)data);
 		*size = 4;
 		break;
@@ -1194,15 +1184,16 @@ static int smu_v13_0_7_print_clk_levels(struct smu_context *smu,
 	struct smu_13_0_dpm_table *single_dpm_table;
 	struct smu_13_0_pcie_table *pcie_table;
 	uint32_t gen_speed, lane_width;
-	int i, curr_freq, size = 0;
+	int i, curr_freq, size = 0, start_offset = 0;
 	int32_t min_value, max_value;
 	int ret = 0;
 
 	smu_cmn_get_sysfs_buf(&buf, &size);
+	start_offset = size;
 
 	if (amdgpu_ras_intr_triggered()) {
 		size += sysfs_emit_at(buf, size, "unavailable\n");
-		return size;
+		return size - start_offset;
 	}
 
 	switch (clk_type) {
@@ -1533,7 +1524,7 @@ static int smu_v13_0_7_print_clk_levels(struct smu_context *smu,
 		break;
 	}
 
-	return size;
+	return size - start_offset;
 }
 
 static int smu_v13_0_7_od_restore_table_single(struct smu_context *smu, long input)
@@ -2729,6 +2720,89 @@ static int smu_v13_0_7_set_power_limit(struct smu_context *smu,
 	return 0;
 }
 
+static int smu_v13_0_7_update_pcie_parameters(struct smu_context *smu,
+				     uint8_t pcie_gen_cap,
+				     uint8_t pcie_width_cap)
+{
+	struct smu_13_0_dpm_context *dpm_context = smu->smu_dpm.dpm_context;
+	struct smu_13_0_pcie_table *pcie_table =
+				&dpm_context->dpm_tables.pcie_table;
+	int num_of_levels;
+	int link_level;
+	uint32_t smu_pcie_arg;
+	struct smu_table_context *table_context = &smu->smu_table;
+	PPTable_t *pptable = table_context->driver_pptable;
+	SkuTable_t *skutable = &pptable->SkuTable;
+	int ret = 0;
+	int i;
+
+	pcie_table->num_of_link_levels = 0;
+	for (link_level = 0; link_level < NUM_LINK_LEVELS; link_level++) {
+		if (!skutable->PcieGenSpeed[link_level] &&
+		    !skutable->PcieLaneCount[link_level] &&
+		    !skutable->LclkFreq[link_level])
+			continue;
+
+		pcie_table->pcie_gen[pcie_table->num_of_link_levels] =
+					skutable->PcieGenSpeed[link_level];
+		pcie_table->pcie_lane[pcie_table->num_of_link_levels] =
+					skutable->PcieLaneCount[link_level];
+		pcie_table->clk_freq[pcie_table->num_of_link_levels] =
+					skutable->LclkFreq[link_level];
+		pcie_table->num_of_link_levels++;
+	}
+
+	num_of_levels = pcie_table->num_of_link_levels;
+	if (!num_of_levels)
+		return 0;
+
+	if (!(smu->adev->pm.pp_feature & PP_PCIE_DPM_MASK)) {
+		if (pcie_table->pcie_gen[num_of_levels - 1] < pcie_gen_cap)
+			pcie_gen_cap = pcie_table->pcie_gen[num_of_levels - 1];
+
+		if (pcie_table->pcie_lane[num_of_levels - 1] < pcie_width_cap)
+			pcie_width_cap = pcie_table->pcie_lane[num_of_levels - 1];
+
+		/* Force all levels to use the same settings */
+		for (i = 0; i < num_of_levels; i++) {
+			pcie_table->pcie_gen[i] = pcie_gen_cap;
+			pcie_table->pcie_lane[i] = pcie_width_cap;
+			smu_pcie_arg = i << 16;
+			smu_pcie_arg |= pcie_table->pcie_gen[i] << 8;
+			smu_pcie_arg |= pcie_table->pcie_lane[i];
+
+			ret = smu_cmn_send_smc_msg_with_param(smu,
+								SMU_MSG_OverridePcieParameters,
+								smu_pcie_arg,
+								NULL);
+			if (ret)
+				break;
+		}
+	} else {
+		for (i = 0; i < num_of_levels; i++) {
+			if (pcie_table->pcie_gen[i] > pcie_gen_cap ||
+				pcie_table->pcie_lane[i] > pcie_width_cap) {
+				pcie_table->pcie_gen[i] = pcie_table->pcie_gen[i] > pcie_gen_cap ?
+										  pcie_gen_cap : pcie_table->pcie_gen[i];
+				pcie_table->pcie_lane[i] = pcie_table->pcie_lane[i] > pcie_width_cap ?
+										   pcie_width_cap : pcie_table->pcie_lane[i];
+				smu_pcie_arg = i << 16;
+				smu_pcie_arg |= pcie_table->pcie_gen[i] << 8;
+				smu_pcie_arg |= pcie_table->pcie_lane[i];
+
+				ret = smu_cmn_send_smc_msg_with_param(smu,
+									SMU_MSG_OverridePcieParameters,
+									smu_pcie_arg,
+									NULL);
+				if (ret)
+					break;
+			}
+		}
+	}
+
+	return ret;
+}
+
 static const struct pptable_funcs smu_v13_0_7_ppt_funcs = {
 	.get_allowed_feature_mask = smu_v13_0_7_get_allowed_feature_mask,
 	.set_default_dpm_table = smu_v13_0_7_set_default_dpm_table,
@@ -2758,7 +2832,7 @@ static const struct pptable_funcs smu_v13_0_7_ppt_funcs = {
 	.feature_is_enabled = smu_cmn_feature_is_enabled,
 	.print_clk_levels = smu_v13_0_7_print_clk_levels,
 	.force_clk_levels = smu_v13_0_7_force_clk_levels,
-	.update_pcie_parameters = smu_v13_0_update_pcie_parameters,
+	.update_pcie_parameters = smu_v13_0_7_update_pcie_parameters,
 	.get_thermal_temperature_range = smu_v13_0_7_get_thermal_temperature_range,
 	.register_irq_handler = smu_v13_0_register_irq_handler,
 	.enable_thermal_alert = smu_v13_0_enable_thermal_alert,
@@ -2811,5 +2885,4 @@ void smu_v13_0_7_set_ppt_funcs(struct smu_context *smu)
 	smu->workload_map = smu_v13_0_7_workload_map;
 	smu->smc_driver_if_version = SMU13_0_7_DRIVER_IF_VERSION;
 	smu_v13_0_set_smu_mailbox_registers(smu);
-	smu->power_profile_mode = PP_SMC_POWER_PROFILE_BOOTUP_DEFAULT;
 }

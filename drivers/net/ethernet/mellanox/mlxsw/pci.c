@@ -156,7 +156,7 @@ static int mlxsw_pci_napi_devs_init(struct mlxsw_pci *mlxsw_pci)
 	}
 	strscpy(mlxsw_pci->napi_dev_rx->name, "mlxsw_rx",
 		sizeof(mlxsw_pci->napi_dev_rx->name));
-	dev_set_threaded(mlxsw_pci->napi_dev_rx, true);
+	netif_threaded_enable(mlxsw_pci->napi_dev_rx);
 
 	return 0;
 
@@ -2213,6 +2213,8 @@ static int mlxsw_pci_skb_transmit(void *bus_priv, struct sk_buff *skb,
 	/* Set unused sq entries byte count to zero. */
 	for (i++; i < MLXSW_PCI_WQE_SG_ENTRIES; i++)
 		mlxsw_pci_wqe_byte_count_set(wqe, i, 0);
+
+	mlxsw_pci_wqe_ipcs_set(wqe, skb->ip_summed == CHECKSUM_PARTIAL);
 
 	/* Everything is set up, ring producer doorbell to get HW going */
 	q->producer_counter++;

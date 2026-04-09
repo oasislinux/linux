@@ -31,6 +31,7 @@ set -e
 LD="$1"
 KBUILD_LDFLAGS="$2"
 LDFLAGS_vmlinux="$3"
+VMLINUX="$4"
 
 is_enabled() {
 	grep -q "^$1=y" include/config/auto.conf
@@ -59,7 +60,8 @@ vmlinux_link()
 	# skip output file argument
 	shift
 
-	if is_enabled CONFIG_LTO_CLANG || is_enabled CONFIG_X86_KERNEL_IBT; then
+	if is_enabled CONFIG_LTO_CLANG || is_enabled CONFIG_X86_KERNEL_IBT ||
+	   is_enabled CONFIG_KLP_BUILD; then
 		# Use vmlinux.o instead of performing the slow LTO link again.
 		objs=vmlinux.o
 		libs=
@@ -72,10 +74,7 @@ vmlinux_link()
 		objs="${objs} .builtin-dtbs.o"
 	fi
 
-	if is_enabled CONFIG_MODULES; then
-		objs="${objs} .vmlinux.export.o"
-	fi
-
+	objs="${objs} .vmlinux.export.o"
 	objs="${objs} init/version-timestamp.o"
 
 	if [ "${SRCARCH}" = "um" ]; then
@@ -97,8 +96,8 @@ vmlinux_link()
 		ldflags="${ldflags} ${wl}--strip-debug"
 	fi
 
-	if is_enabled CONFIG_VMLINUX_MAP; then
-		ldflags="${ldflags} ${wl}-Map=${output}.map"
+	if [ -n "${generate_map}" ];  then
+		ldflags="${ldflags} ${wl}-Map=vmlinux.map"
 	fi
 
 	${ld} ${ldflags} -o ${output}					\
@@ -144,10 +143,6 @@ kallsyms()
 		kallsymopt="${kallsymopt} --all-symbols"
 	fi
 
-	if is_enabled CONFIG_KALLSYMS_ABSOLUTE_PERCPU; then
-		kallsymopt="${kallsymopt} --absolute-percpu"
-	fi
-
 	info KSYMS "${2}.S"
 	scripts/kallsyms ${kallsymopt} "${1}" > "${2}.S"
 
@@ -177,12 +172,14 @@ mksysmap()
 
 sorttable()
 {
-	${objtree}/scripts/sorttable ${1}
+	${NM} -S ${1} > .tmp_vmlinux.nm-sort
+	${objtree}/scripts/sorttable -s .tmp_vmlinux.nm-sort ${1}
 }
 
 cleanup()
 {
 	rm -f .btf.*
+	rm -f .tmp_vmlinux.nm-sort
 	rm -f System.map
 	rm -f vmlinux
 	rm -f vmlinux.map
@@ -210,6 +207,14 @@ fi
 btf_vmlinux_bin_o=
 kallsymso=
 strip_debug=
+generate_map=
+
+# Use "make UT=1" to trigger warnings on unused tracepoints
+case "${WARN_ON_UNUSED_TRACEPOINTS}" in
+*1*)
+	${objtree}/scripts/tracepoint-update vmlinux.o
+	;;
+esac
 
 if is_enabled CONFIG_KALLSYMS; then
 	true > .tmp_vmlinux0.syms
@@ -278,23 +283,27 @@ fi
 
 strip_debug=
 
-vmlinux_link vmlinux
+if is_enabled CONFIG_VMLINUX_MAP; then
+	generate_map=1
+fi
+
+vmlinux_link "${VMLINUX}"
 
 # fill in BTF IDs
 if is_enabled CONFIG_DEBUG_INFO_BTF; then
-	info BTFIDS vmlinux
+	info BTFIDS "${VMLINUX}"
 	RESOLVE_BTFIDS_ARGS=""
 	if is_enabled CONFIG_WERROR; then
 		RESOLVE_BTFIDS_ARGS=" --fatal_warnings "
 	fi
-	${RESOLVE_BTFIDS} ${RESOLVE_BTFIDS_ARGS} vmlinux
+	${RESOLVE_BTFIDS} ${RESOLVE_BTFIDS_ARGS} "${VMLINUX}"
 fi
 
-mksysmap vmlinux System.map
+mksysmap "${VMLINUX}" System.map
 
 if is_enabled CONFIG_BUILDTIME_TABLE_SORT; then
-	info SORTTAB vmlinux
-	if ! sorttable vmlinux; then
+	info SORTTAB "${VMLINUX}"
+	if ! sorttable "${VMLINUX}"; then
 		echo >&2 Failed to sort kernel tables
 		exit 1
 	fi
@@ -310,4 +319,4 @@ if is_enabled CONFIG_KALLSYMS; then
 fi
 
 # For fixdep
-echo "vmlinux: $0" > .vmlinux.d
+echo "${VMLINUX}: $0" > ".${VMLINUX}.d"

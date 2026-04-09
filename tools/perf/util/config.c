@@ -19,7 +19,7 @@
 #include "util/hist.h"  /* perf_hist_config */
 #include "util/stat.h"  /* perf_stat__set_big_num */
 #include "util/evsel.h"  /* evsel__hw_names, evsel__use_bpf_counters */
-#include "util/srcline.h"  /* addr2line_timeout_ms */
+#include "util/addr2line.h"  /* addr2line_timeout_ms */
 #include "build-id.h"
 #include "debug.h"
 #include "config.h"
@@ -37,6 +37,8 @@
 
 #define METRIC_ONLY_LEN 20
 
+static struct stats walltime_nsecs_stats;
+
 struct perf_stat_config stat_config = {
 	.aggr_mode		= AGGR_GLOBAL,
 	.aggr_level		= MAX_CACHE_LVL + 1,
@@ -45,7 +47,6 @@ struct perf_stat_config stat_config = {
 	.run_count		= 1,
 	.metric_only_len	= METRIC_ONLY_LEN,
 	.walltime_nsecs_stats	= &walltime_nsecs_stats,
-	.ru_stats		= &ru_stats,
 	.big_num		= true,
 	.ctl_fd			= -1,
 	.ctl_fd_ack		= -1,
@@ -854,12 +855,6 @@ void perf_config__exit(void)
 {
 	perf_config_set__delete(config_set);
 	config_set = NULL;
-}
-
-void perf_config__refresh(void)
-{
-	perf_config__exit();
-	perf_config__init();
 }
 
 static void perf_config_item__delete(struct perf_config_item *item)

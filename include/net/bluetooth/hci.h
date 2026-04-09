@@ -208,6 +208,13 @@ enum {
 	 */
 	HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED,
 
+	/* When this quirk is set consider Sync Flow Control as supported by
+	 * the driver.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED,
+
 	/* When this quirk is set, the LE states reported through the
 	 * HCI_LE_READ_SUPPORTED_STATES are invalid/broken.
 	 *
@@ -354,6 +361,24 @@ enum {
 	 * during the hdev->setup vendor callback.
 	 */
 	HCI_QUIRK_FIXUP_LE_EXT_ADV_REPORT_PHY,
+
+	/* When this quirk is set, the HCI_OP_READ_VOICE_SETTING command is
+	 * skipped. This is required for a subset of the CSR controller clones
+	 * which erroneously claim to support it.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_READ_VOICE_SETTING,
+
+	/* When this quirk is set, the HCI_OP_READ_PAGE_SCAN_TYPE command is
+	 * skipped. This is required for a subset of the CSR controller clones
+	 * which erroneously claim to support it.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
+
+	__HCI_NUM_QUIRKS,
 };
 
 /* HCI device flags */
@@ -409,6 +434,7 @@ enum {
 	HCI_USER_CHANNEL,
 	HCI_EXT_CONFIGURED,
 	HCI_LE_ADV,
+	HCI_LE_ADV_0,
 	HCI_LE_PER_ADV,
 	HCI_LE_SCAN,
 	HCI_SSP_ENABLED,
@@ -432,6 +458,7 @@ enum {
 	HCI_WIDEBAND_SPEECH_ENABLED,
 	HCI_EVENT_FILTER_CONFIGURED,
 	HCI_PA_SYNC,
+	HCI_SCO_FLOWCTL,
 
 	HCI_DUT_MODE,
 	HCI_VENDOR_DIAG,
@@ -462,6 +489,7 @@ enum {
 #define HCI_AUTO_OFF_TIMEOUT	msecs_to_jiffies(2000)	/* 2 seconds */
 #define HCI_ACL_CONN_TIMEOUT	msecs_to_jiffies(20000)	/* 20 seconds */
 #define HCI_LE_CONN_TIMEOUT	msecs_to_jiffies(20000)	/* 20 seconds */
+#define HCI_ISO_TX_TIMEOUT	usecs_to_jiffies(0x7fffff) /* 8388607 usecs */
 
 /* HCI data types */
 #define HCI_COMMAND_PKT		0x01
@@ -470,6 +498,7 @@ enum {
 #define HCI_EVENT_PKT		0x04
 #define HCI_ISODATA_PKT		0x05
 #define HCI_DIAG_PKT		0xf0
+#define HCI_DRV_PKT		0xf1
 #define HCI_VENDOR_PKT		0xff
 
 /* HCI packet types */
@@ -533,7 +562,9 @@ enum {
 #define ESCO_LINK	0x02
 /* Low Energy links do not have defined link type. Use invented one */
 #define LE_LINK		0x80
-#define ISO_LINK	0x82
+#define CIS_LINK	0x82
+#define BIS_LINK	0x83
+#define PA_LINK		0x84
 #define INVALID_LINK	0xff
 
 /* LMP features */
@@ -616,10 +647,13 @@ enum {
 #define HCI_LE_EXT_ADV			0x10
 #define HCI_LE_PERIODIC_ADV		0x20
 #define HCI_LE_CHAN_SEL_ALG2		0x40
+#define HCI_LE_PAST_SENDER		0x01
+#define HCI_LE_PAST_RECEIVER		0x02
 #define HCI_LE_CIS_CENTRAL		0x10
 #define HCI_LE_CIS_PERIPHERAL		0x20
 #define HCI_LE_ISO_BROADCASTER		0x40
 #define HCI_LE_ISO_SYNC_RECEIVER	0x80
+#define HCI_LE_LL_EXT_FEATURE		0x80
 
 /* Connection modes */
 #define HCI_CM_ACTIVE	0x0000
@@ -852,6 +886,11 @@ struct hci_cp_remote_name_req {
 
 #define HCI_OP_REMOTE_NAME_REQ_CANCEL	0x041a
 struct hci_cp_remote_name_req_cancel {
+	bdaddr_t bdaddr;
+} __packed;
+
+struct hci_rp_remote_name_req_cancel {
+	__u8     status;
 	bdaddr_t bdaddr;
 } __packed;
 
@@ -1528,6 +1567,11 @@ struct hci_rp_read_tx_power {
 	__s8     tx_power;
 } __packed;
 
+#define HCI_OP_WRITE_SYNC_FLOWCTL	0x0c2f
+struct hci_cp_write_sync_flowctl {
+	__u8     enable;
+} __packed;
+
 #define HCI_OP_READ_PAGE_SCAN_TYPE	0x0c46
 struct hci_rp_read_page_scan_type {
 	__u8     status;
@@ -1897,6 +1941,8 @@ struct hci_cp_le_pa_create_sync {
 	__u8      sync_cte_type;
 } __packed;
 
+#define HCI_OP_LE_PA_CREATE_SYNC_CANCEL	0x2045
+
 #define HCI_OP_LE_PA_TERM_SYNC		0x2046
 struct hci_cp_le_pa_term_sync {
 	__le16    handle;
@@ -2023,6 +2069,44 @@ struct hci_cp_le_set_privacy_mode {
 	__u8  bdaddr_type;
 	bdaddr_t  bdaddr;
 	__u8  mode;
+} __packed;
+
+#define HCI_OP_LE_PAST			0x205a
+struct hci_cp_le_past {
+	__le16 handle;
+	__le16 service_data;
+	__le16 sync_handle;
+} __packed;
+
+struct hci_rp_le_past {
+	__u8   status;
+	__le16 handle;
+} __packed;
+
+#define HCI_OP_LE_PAST_SET_INFO		0x205b
+struct hci_cp_le_past_set_info {
+	__le16 handle;
+	__le16 service_data;
+	__u8   adv_handle;
+} __packed;
+
+struct hci_rp_le_past_set_info {
+	__u8   status;
+	__le16 handle;
+} __packed;
+
+#define HCI_OP_LE_PAST_PARAMS		0x205c
+struct hci_cp_le_past_params {
+	__le16  handle;
+	__u8    mode;
+	__le16  skip;
+	__le16  sync_timeout;
+	__u8    cte_type;
+} __packed;
+
+struct hci_rp_le_past_params {
+	__u8   status;
+	__le16 handle;
 } __packed;
 
 #define HCI_OP_LE_READ_BUFFER_SIZE_V2	0x2060
@@ -2170,6 +2254,19 @@ struct hci_rp_le_setup_iso_path {
 struct hci_cp_le_set_host_feature {
 	__u8     bit_number;
 	__u8     bit_value;
+} __packed;
+
+#define HCI_OP_LE_READ_ALL_LOCAL_FEATURES	0x2087
+struct hci_rp_le_read_all_local_features {
+	__u8    status;
+	__u8    page;
+	__u8    features[248];
+} __packed;
+
+#define HCI_OP_LE_READ_ALL_REMOTE_FEATURES	0x2088
+struct hci_cp_le_read_all_remote_features {
+	__le16	 handle;
+	__u8	 pages;
 } __packed;
 
 /* ---- HCI Events ---- */
@@ -2594,6 +2691,7 @@ struct hci_ev_le_conn_complete {
 #define LE_EXT_ADV_DIRECT_IND		0x0004
 #define LE_EXT_ADV_SCAN_RSP		0x0008
 #define LE_EXT_ADV_LEGACY_PDU		0x0010
+#define LE_EXT_ADV_DATA_STATUS_MASK	0x0060
 #define LE_EXT_ADV_EVT_TYPE_MASK	0x007f
 
 #define ADDR_LE_DEV_PUBLIC		0x00
@@ -2739,6 +2837,11 @@ struct hci_ev_le_per_adv_report {
 	__u8     data[];
 } __packed;
 
+#define HCI_EV_LE_PA_SYNC_LOST		0x10
+struct hci_ev_le_pa_sync_lost {
+	__le16 handle;
+} __packed;
+
 #define LE_PA_DATA_COMPLETE	0x00
 #define LE_PA_DATA_MORE_TO_COME	0x01
 #define LE_PA_DATA_TRUNCATED	0x02
@@ -2749,6 +2852,20 @@ struct hci_evt_le_ext_adv_set_term {
 	__u8	handle;
 	__le16	conn_handle;
 	__u8	num_evts;
+} __packed;
+
+#define HCI_EV_LE_PAST_RECEIVED		0x18
+struct hci_ev_le_past_received {
+	__u8   status;
+	__le16 handle;
+	__le16 service_data;
+	__le16 sync_handle;
+	__u8   sid;
+	__u8   bdaddr_type;
+	bdaddr_t  bdaddr;
+	__u8   phy;
+	__le16 interval;
+	__u8   clock_accuracy;
 } __packed;
 
 #define HCI_EVT_LE_CIS_ESTABLISHED	0x19
@@ -2796,8 +2913,8 @@ struct hci_evt_le_create_big_complete {
 	__le16  bis_handle[];
 } __packed;
 
-#define HCI_EVT_LE_BIG_SYNC_ESTABILISHED 0x1d
-struct hci_evt_le_big_sync_estabilished {
+#define HCI_EVT_LE_BIG_SYNC_ESTABLISHED 0x1d
+struct hci_evt_le_big_sync_established {
 	__u8    status;
 	__u8    handle;
 	__u8    latency[3];
@@ -2809,6 +2926,12 @@ struct hci_evt_le_big_sync_estabilished {
 	__le16  interval;
 	__u8    num_bis;
 	__le16  bis[];
+} __packed;
+
+#define HCI_EVT_LE_BIG_SYNC_LOST 0x1e
+struct hci_evt_le_big_sync_lost {
+	__u8    handle;
+	__u8    reason;
 } __packed;
 
 #define HCI_EVT_LE_BIG_INFO_ADV_REPORT	0x22
@@ -2826,6 +2949,15 @@ struct hci_evt_le_big_info_adv_report {
 	__u8    phy;
 	__u8    framing;
 	__u8    encryption;
+} __packed;
+
+#define HCI_EVT_LE_ALL_REMOTE_FEATURES_COMPLETE 0x2b
+struct hci_evt_le_read_all_remote_features_complete {
+	__u8    status;
+	__le16  handle;
+	__u8    max_pages;
+	__u8    valid_pages;
+	__u8    features[248];
 } __packed;
 
 #define HCI_EV_VENDOR			0xff

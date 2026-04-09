@@ -20,10 +20,10 @@
  *    CP Programming Service, IBM document # SC24-5760
  */
 
-#define KMSG_COMPONENT "iucv"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "iucv: " fmt
 
 #include <linux/kernel_stat.h>
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/spinlock.h>
@@ -39,6 +39,7 @@
 #include <linux/reboot.h>
 #include <net/iucv/iucv.h>
 #include <linux/atomic.h>
+#include <asm/machine.h>
 #include <asm/ebcdic.h>
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -93,7 +94,7 @@ struct device *iucv_alloc_device(const struct attribute_group **attrs,
 	if (!dev)
 		goto out_error;
 	va_start(vargs, fmt);
-	vsnprintf(buf, sizeof(buf), fmt, vargs);
+	vscnprintf(buf, sizeof(buf), fmt, vargs);
 	rc = dev_set_name(dev, "%s", buf);
 	va_end(vargs);
 	if (rc)
@@ -1865,7 +1866,7 @@ static int __init iucv_init(void)
 {
 	int rc;
 
-	if (!MACHINE_IS_VM) {
+	if (!machine_is_vm()) {
 		rc = -EPROTONOSUPPORT;
 		goto out;
 	}

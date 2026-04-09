@@ -589,8 +589,8 @@ static void tda1997x_enable_edid(struct v4l2_subdev *sd)
 
 	v4l2_dbg(1, debug, sd, "%s\n", __func__);
 
-	/* Enable hotplug after 100ms */
-	schedule_delayed_work(&state->delayed_work_enable_hpd, HZ / 10);
+	/* Enable hotplug after 143ms */
+	schedule_delayed_work(&state->delayed_work_enable_hpd, HZ / 7);
 }
 
 /* -----------------------------------------------------------------------------
@@ -2315,11 +2315,10 @@ static int tda1997x_parse_dt(struct tda1997x_state *state)
 		return -EINVAL;
 
 	ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(ep), &bus_cfg);
-	if (ret) {
-		of_node_put(ep);
-		return ret;
-	}
 	of_node_put(ep);
+	if (ret)
+		return ret;
+
 	pdata->vidout_bus_type = bus_cfg.bus_type;
 
 	/* polarity of HS/VS/DE */
@@ -2798,7 +2797,6 @@ err_free_media:
 err_free_handler:
 	v4l2_ctrl_handler_free(&state->hdl);
 err_free_mutex:
-	cancel_delayed_work(&state->delayed_work_enable_hpd);
 	mutex_destroy(&state->page_lock);
 	mutex_destroy(&state->lock);
 	tda1997x_set_power(state, 0);

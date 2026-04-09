@@ -122,7 +122,7 @@ err_mclk_tx:
 	return ret;
 }
 
-static int __maybe_unused i2s_tdm_runtime_suspend(struct device *dev)
+static int i2s_tdm_runtime_suspend(struct device *dev)
 {
 	struct rk_i2s_tdm_dev *i2s_tdm = dev_get_drvdata(dev);
 
@@ -134,7 +134,7 @@ static int __maybe_unused i2s_tdm_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused i2s_tdm_runtime_resume(struct device *dev)
+static int i2s_tdm_runtime_resume(struct device *dev)
 {
 	struct rk_i2s_tdm_dev *i2s_tdm = dev_get_drvdata(dev);
 	int ret;
@@ -1337,8 +1337,7 @@ static int rockchip_i2s_tdm_probe(struct platform_device *pdev)
 
 	ret = i2s_tdm_prepare_enable_mclk(i2s_tdm);
 	if (ret) {
-		ret = dev_err_probe(i2s_tdm->dev, ret,
-				    "Failed to enable one or more mclks\n");
+		dev_err_probe(i2s_tdm->dev, ret, "Failed to enable one or more mclks\n");
 		goto err_disable_hclk;
 	}
 
@@ -1390,7 +1389,7 @@ static void rockchip_i2s_tdm_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 }
 
-static int __maybe_unused rockchip_i2s_tdm_suspend(struct device *dev)
+static int rockchip_i2s_tdm_suspend(struct device *dev)
 {
 	struct rk_i2s_tdm_dev *i2s_tdm = dev_get_drvdata(dev);
 
@@ -1399,7 +1398,7 @@ static int __maybe_unused rockchip_i2s_tdm_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused rockchip_i2s_tdm_resume(struct device *dev)
+static int rockchip_i2s_tdm_resume(struct device *dev)
 {
 	struct rk_i2s_tdm_dev *i2s_tdm = dev_get_drvdata(dev);
 	int ret;
@@ -1414,10 +1413,8 @@ static int __maybe_unused rockchip_i2s_tdm_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops rockchip_i2s_tdm_pm_ops = {
-	SET_RUNTIME_PM_OPS(i2s_tdm_runtime_suspend, i2s_tdm_runtime_resume,
-			   NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(rockchip_i2s_tdm_suspend,
-				rockchip_i2s_tdm_resume)
+	RUNTIME_PM_OPS(i2s_tdm_runtime_suspend, i2s_tdm_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(rockchip_i2s_tdm_suspend, rockchip_i2s_tdm_resume)
 };
 
 static struct platform_driver rockchip_i2s_tdm_driver = {
@@ -1426,7 +1423,7 @@ static struct platform_driver rockchip_i2s_tdm_driver = {
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = rockchip_i2s_tdm_match,
-		.pm = &rockchip_i2s_tdm_pm_ops,
+		.pm = pm_ptr(&rockchip_i2s_tdm_pm_ops),
 	},
 };
 module_platform_driver(rockchip_i2s_tdm_driver);

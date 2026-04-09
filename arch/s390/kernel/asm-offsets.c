@@ -4,16 +4,16 @@
  * This code generates raw asm output which is post-processed to extract
  * and format the required data.
  */
-
-#define ASM_OFFSETS_C
+#define COMPILE_OFFSETS
 
 #include <linux/kbuild.h>
-#include <linux/kvm_host.h>
 #include <linux/sched.h>
 #include <linux/purgatory.h>
 #include <linux/pgtable.h>
-#include <linux/ftrace.h>
+#include <linux/ftrace_regs.h>
+#include <asm/kvm_host_types.h>
 #include <asm/stacktrace.h>
+#include <asm/ptrace.h>
 
 int main(void)
 {
@@ -21,6 +21,9 @@ int main(void)
 	OFFSET(__TASK_stack, task_struct, stack);
 	OFFSET(__TASK_thread, task_struct, thread);
 	OFFSET(__TASK_pid, task_struct, pid);
+#ifdef CONFIG_STACKPROTECTOR
+	OFFSET(__TASK_stack_canary, task_struct, stack_canary);
+#endif
 	BLANK();
 	/* thread struct offsets */
 	OFFSET(__THREAD_ksp, thread_struct, ksp);
@@ -49,8 +52,8 @@ int main(void)
 	OFFSET(__PT_R14, pt_regs, gprs[14]);
 	OFFSET(__PT_R15, pt_regs, gprs[15]);
 	OFFSET(__PT_ORIG_GPR2, pt_regs, orig_gpr2);
+	OFFSET(__PT_INT_CODE, pt_regs, int_code);
 	OFFSET(__PT_FLAGS, pt_regs, flags);
-	OFFSET(__PT_CR1, pt_regs, cr1);
 	OFFSET(__PT_LAST_BREAK, pt_regs, last_break);
 	DEFINE(__PT_SIZE, sizeof(struct pt_regs));
 	BLANK();
@@ -64,6 +67,7 @@ int main(void)
 	OFFSET(__SF_SIE_FLAGS, stack_frame, sie_flags);
 	OFFSET(__SF_SIE_CONTROL_PHYS, stack_frame, sie_control_block_phys);
 	OFFSET(__SF_SIE_GUEST_ASCE, stack_frame, sie_guest_asce);
+	OFFSET(__SF_SIE_IRQ, stack_frame, sie_irq);
 	DEFINE(STACK_FRAME_OVERHEAD, sizeof(struct stack_frame));
 	BLANK();
 	OFFSET(__SFUSER_BACKCHAIN, stack_frame_user, back_chain);
@@ -76,7 +80,8 @@ int main(void)
 	OFFSET(__LC_EXT_CPU_ADDR, lowcore, ext_cpu_addr);
 	OFFSET(__LC_EXT_INT_CODE, lowcore, ext_int_code);
 	OFFSET(__LC_PGM_ILC, lowcore, pgm_ilc);
-	OFFSET(__LC_PGM_INT_CODE, lowcore, pgm_code);
+	OFFSET(__LC_PGM_CODE, lowcore, pgm_code);
+	OFFSET(__LC_PGM_INT_CODE, lowcore, pgm_int_code);
 	OFFSET(__LC_DATA_EXC_CODE, lowcore, data_exc_code);
 	OFFSET(__LC_MON_CLASS_NR, lowcore, mon_class_num);
 	OFFSET(__LC_PER_CODE, lowcore, per_code);
@@ -122,7 +127,6 @@ int main(void)
 	OFFSET(__LC_LAST_UPDATE_TIMER, lowcore, last_update_timer);
 	OFFSET(__LC_LAST_UPDATE_CLOCK, lowcore, last_update_clock);
 	OFFSET(__LC_INT_CLOCK, lowcore, int_clock);
-	OFFSET(__LC_BOOT_CLOCK, lowcore, boot_clock);
 	OFFSET(__LC_CURRENT, lowcore, current_task);
 	OFFSET(__LC_KERNEL_STACK, lowcore, kernel_stack);
 	OFFSET(__LC_ASYNC_STACK, lowcore, async_stack);
@@ -139,6 +143,7 @@ int main(void)
 	OFFSET(__LC_CURRENT_PID, lowcore, current_pid);
 	OFFSET(__LC_LAST_BREAK, lowcore, last_break);
 	/* software defined ABI-relevant lowcore locations 0xe00 - 0xe20 */
+	OFFSET(__LC_STACK_CANARY, lowcore, stack_canary);
 	OFFSET(__LC_DUMP_REIPL, lowcore, ipib);
 	OFFSET(__LC_VMCORE_INFO, lowcore, vmcore_info);
 	OFFSET(__LC_OS_INFO, lowcore, os_info);

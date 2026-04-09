@@ -26,6 +26,7 @@
 
 #include <linux/inetdevice.h>
 #include <net/arp.h>
+#include <net/flow.h>
 #include <net/ip.h>
 #include <net/ip_fib.h>
 #include <net/ip6_fib.h>
@@ -34,10 +35,10 @@
 #include <net/addrconf.h>
 #include <net/l3mdev.h>
 #include <net/fib_rules.h>
+#include <net/netdev_lock.h>
 #include <net/sch_generic.h>
 #include <net/netns/generic.h>
 #include <net/netfilter/nf_conntrack.h>
-#include <net/inet_dscp.h>
 
 #define DRV_NAME	"vrf"
 #define DRV_VERSION	"1.1"
@@ -342,15 +343,13 @@ unlock:
 static bool qdisc_tx_is_default(const struct net_device *dev)
 {
 	struct netdev_queue *txq;
-	struct Qdisc *qdisc;
 
 	if (dev->num_tx_queues > 1)
 		return false;
 
 	txq = netdev_get_tx_queue(dev, 0);
-	qdisc = rcu_access_pointer(txq->qdisc);
 
-	return !qdisc->enqueue;
+	return qdisc_txq_has_no_queue(txq);
 }
 
 /* Local traffic destined to local address. Reinsert the packet to rx
@@ -506,7 +505,7 @@ static netdev_tx_t vrf_process_v4_outbound(struct sk_buff *skb,
 	/* needed to match OIF rule */
 	fl4.flowi4_l3mdev = vrf_dev->ifindex;
 	fl4.flowi4_iif = LOOPBACK_IFINDEX;
-	fl4.flowi4_tos = inet_dscp_to_dsfield(ip4h_dscp(ip4h));
+	fl4.flowi4_dscp = ip4h_dscp(ip4h);
 	fl4.flowi4_flags = FLOWI_FLAG_ANYSRC;
 	fl4.flowi4_proto = ip4h->protocol;
 	fl4.daddr = ip4h->daddr;
@@ -1303,6 +1302,8 @@ static void vrf_ip6_input_dst(struct sk_buff *skb, struct net_device *vrf_dev,
 	struct net *net = dev_net(vrf_dev);
 	struct rt6_info *rt6;
 
+	skb_dst_drop(skb);
+
 	rt6 = vrf_ip6_route_lookup(net, vrf_dev, &fl6, ifindex, skb,
 				   RT6_LOOKUP_F_HAS_SADDR | RT6_LOOKUP_F_IFACE);
 	if (unlikely(!rt6))
@@ -1537,14 +1538,12 @@ static int vrf_fib_rule(const struct net_device *dev, __u8 family, bool add_it)
 
 	nlmsg_end(skb, nlh);
 
-	/* fib_nl_{new,del}rule handling looks for net from skb->sk */
-	skb->sk = dev_net(dev)->rtnl;
 	if (add_it) {
-		err = fib_nl_newrule(skb, nlh, NULL);
+		err = fib_newrule(dev_net(dev), skb, nlh, NULL, true);
 		if (err == -EEXIST)
 			err = 0;
 	} else {
-		err = fib_nl_delrule(skb, nlh, NULL);
+		err = fib_delrule(dev_net(dev), skb, nlh, NULL, true);
 		if (err == -ENOENT)
 			err = 0;
 	}
@@ -1619,7 +1618,7 @@ static void vrf_setup(struct net_device *dev)
 	dev->lltx = true;
 
 	/* don't allow vrf devices to change network namespaces. */
-	dev->netns_local = true;
+	dev->netns_immutable = true;
 
 	/* does not make sense for a VLAN to be added to a vrf device */
 	dev->features   |= NETIF_F_VLAN_CHALLENGED;
@@ -1677,11 +1676,12 @@ static void vrf_dellink(struct net_device *dev, struct list_head *head)
 	unregister_netdevice_queue(dev, head);
 }
 
-static int vrf_newlink(struct net *src_net, struct net_device *dev,
-		       struct nlattr *tb[], struct nlattr *data[],
+static int vrf_newlink(struct net_device *dev,
+		       struct rtnl_newlink_params *params,
 		       struct netlink_ext_ack *extack)
 {
 	struct net_vrf *vrf = netdev_priv(dev);
+	struct nlattr **data = params->data;
 	struct netns_vrf *nn_vrf;
 	bool *add_fib_rules;
 	struct net *net;

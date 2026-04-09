@@ -14,6 +14,7 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_writeback.h>
 
@@ -43,7 +44,7 @@ static int malidp_mw_connector_get_modes(struct drm_connector *connector)
 
 static enum drm_mode_status
 malidp_mw_connector_mode_valid(struct drm_connector *connector,
-			       struct drm_display_mode *mode)
+			       const struct drm_display_mode *mode)
 {
 	struct drm_device *dev = connector->dev;
 	struct drm_mode_config *mode_config = &dev->mode_config;

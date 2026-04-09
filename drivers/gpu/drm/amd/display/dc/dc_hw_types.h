@@ -68,7 +68,7 @@ enum dc_plane_addr_type {
 
 struct dc_plane_address {
 	enum dc_plane_addr_type type;
-	bool tmz_surface;
+	uint8_t tmz_surface;
 	union {
 		struct{
 			PHYSICAL_ADDRESS_LOC addr;
@@ -653,7 +653,8 @@ enum dc_color_space {
 	COLOR_SPACE_YCBCR709_LIMITED,
 	COLOR_SPACE_2020_RGB_FULLRANGE,
 	COLOR_SPACE_2020_RGB_LIMITEDRANGE,
-	COLOR_SPACE_2020_YCBCR,
+	COLOR_SPACE_2020_YCBCR_LIMITED,
+	COLOR_SPACE_2020_YCBCR_FULL,
 	COLOR_SPACE_ADOBERGB,
 	COLOR_SPACE_DCIP3,
 	COLOR_SPACE_DISPLAYNATIVE,
@@ -661,6 +662,7 @@ enum dc_color_space {
 	COLOR_SPACE_APPCTRL,
 	COLOR_SPACE_CUSTOMPOINTS,
 	COLOR_SPACE_YCBCR709_BLACK,
+	COLOR_SPACE_2020_YCBCR = COLOR_SPACE_2020_YCBCR_LIMITED,
 };
 
 enum dc_dither_option {
@@ -972,6 +974,7 @@ struct dc_crtc_timing {
 	uint32_t pix_clk_100hz;
 
 	uint32_t min_refresh_in_uhz;
+	uint32_t max_refresh_in_uhz;
 
 	uint32_t vic;
 	uint32_t hdmi_vic;
@@ -1015,6 +1018,7 @@ struct dc_crtc_timing_adjust {
 	uint32_t v_total_mid;
 	uint32_t v_total_mid_frame_num;
 	uint32_t allow_otg_v_count_halt;
+	uint8_t timing_adjust_pending;
 };
 
 
@@ -1100,7 +1104,8 @@ enum mpcc_gamut_remap_mode_select {
 enum mpcc_gamut_remap_id {
 	MPCC_OGAM_GAMUT_REMAP,
 	MPCC_MCM_FIRST_GAMUT_REMAP,
-	MPCC_MCM_SECOND_GAMUT_REMAP
+	MPCC_MCM_SECOND_GAMUT_REMAP,
+	MPCC_RMCM_GAMUT_REMAP,
 };
 
 enum cursor_matrix_mode {

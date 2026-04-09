@@ -54,7 +54,7 @@ monitoring are address-space dependent.
 DAMON consolidates these implementations in a layer called DAMON Operations
 Set, and defines the interface between it and the upper layer.  The upper layer
 is dedicated for DAMON's core logics including the mechanism for control of the
-monitoring accruracy and the overhead.
+monitoring accuracy and the overhead.
 
 Hence, DAMON can easily be extended for any address space and/or available
 hardware features by configuring the core logic to use the appropriate
@@ -67,7 +67,7 @@ processes, NUMA nodes, files, and backing memory devices would be supportable.
 Also, if some architectures or devices support special optimized access check
 features, those will be easily configurable.
 
-DAMON currently provides below three operation sets.  Below two subsections
+DAMON currently provides below three operation sets.  Below three subsections
 describe how those work.
 
  - vaddr: Monitor virtual address spaces of specific processes
@@ -135,6 +135,20 @@ the interference is the responsibility of sysadmins.  However, it solves the
 conflict with the reclaim logic using ``PG_idle`` and ``PG_young`` page flags,
 as Idle page tracking does.
 
+.. _damon_design_addr_unit:
+
+Address Unit
+------------
+
+DAMON core layer uses ``unsinged long`` type for monitoring target address
+ranges.  In some cases, the address space for a given operations set could be
+too large to be handled with the type.  ARM (32-bit) with large physical
+address extension is an example.  For such cases, a per-operations set
+parameter called ``address unit`` is provided.  It represents the scale factor
+that need to be multiplied to the core layer's address for calculating real
+address on the given address space.  Support of ``address unit`` parameter is
+up to each operations set implementation.  ``paddr`` is the only operations set
+implementation that supports the parameter.
 
 .. _damon_core_logic:
 
@@ -313,12 +327,62 @@ sufficient for the given purpose, it shouldn't be unnecessarily further
 lowered.  It is recommended to be set proportional to ``aggregation interval``.
 By default, the ratio is set as ``1/20``, and it is still recommended.
 
+Based on the manual tuning guide, DAMON provides more intuitive knob-based
+intervals auto tuning mechanism.  Please refer to :ref:`the design document of
+the feature <damon_design_monitoring_intervals_autotuning>` for detail.
+
 Refer to below documents for an example tuning based on the above guide.
 
 .. toctree::
    :maxdepth: 1
 
    monitoring_intervals_tuning_example
+
+
+.. _damon_design_monitoring_intervals_autotuning:
+
+Monitoring Intervals Auto-tuning
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+DAMON provides automatic tuning of the ``sampling interval`` and ``aggregation
+interval`` based on the :ref:`the tuning guide idea
+<damon_design_monitoring_params_tuning_guide>`.  The tuning mechanism allows
+users to set the aimed amount of access events to observe via DAMON within
+given time interval.  The target can be specified by the user as a ratio of
+DAMON-observed access events to the theoretical maximum amount of the events
+(``access_bp``) that measured within a given number of aggregations
+(``aggrs``).
+
+The DAMON-observed access events are calculated in byte granularity based on
+DAMON :ref:`region assumption <damon_design_region_based_sampling>`.  For
+example, if a region of size ``X`` bytes of ``Y`` ``nr_accesses`` is found, it
+means ``X * Y`` access events are observed by DAMON.  Theoretical maximum
+access events for the region is calculated in same way, but replacing ``Y``
+with theoretical maximum ``nr_accesses``, which can be calculated as
+``aggregation interval / sampling interval``.
+
+The mechanism calculates the ratio of access events for ``aggrs`` aggregations,
+and increases or decrease the ``sampleing interval`` and ``aggregation
+interval`` in same ratio, if the observed access ratio is lower or higher than
+the target, respectively.  The ratio of the intervals change is decided in
+proportion to the distance between current samples ratio and the target ratio.
+
+The user can further set the minimum and maximum ``sampling interval`` that can
+be set by the tuning mechanism using two parameters (``min_sample_us`` and
+``max_sample_us``).  Because the tuning mechanism changes ``sampling interval``
+and ``aggregation interval`` in same ratio always, the minimum and maximum
+``aggregation interval`` after each of the tuning changes can automatically set
+together.
+
+The tuning is turned off by default, and need to be set explicitly by the user.
+As a rule of thumbs and the Parreto principle, 4% access samples ratio target
+is recommended.  Note that Parreto principle (80/20 rule) has applied twice.
+That is, assumes 4% (20% of 20%) DAMON-observed access events ratio (source)
+to capture 64% (80% multipled by 80%) real access events (outcomes).
+
+To know how user-space can use this feature via :ref:`DAMON sysfs interface
+<sysfs_interface>`, refer to :ref:`intervals_goal
+<damon_usage_sysfs_monitoring_intervals_goal>` part of the documentation.
 
 
 .. _damon_design_damos:
@@ -402,9 +466,9 @@ that supports each action are as below.
  - ``lru_deprio``: Deprioritize the region on its LRU lists.
    Supported by ``paddr`` operations set.
  - ``migrate_hot``: Migrate the regions prioritizing warmer regions.
-   Supported by ``paddr`` operations set.
+   Supported by ``vaddr``, ``fvaddr`` and ``paddr`` operations set.
  - ``migrate_cold``: Migrate the regions prioritizing colder regions.
-   Supported by ``paddr`` operations set.
+   Supported by ``vaddr``, ``fvaddr`` and ``paddr`` operations set.
  - ``stat``: Do nothing but count the statistics.
    Supported by all operations sets.
 
@@ -500,10 +564,10 @@ aggressiveness (the quota) of the corresponding scheme.  For example, if DAMOS
 is under achieving the goal, DAMOS automatically increases the quota.  If DAMOS
 is over achieving the goal, it decreases the quota.
 
-The goal can be specified with three parameters, namely ``target_metric``,
-``target_value``, and ``current_value``.  The auto-tuning mechanism tries to
-make ``current_value`` of ``target_metric`` be same to ``target_value``.
-Currently, two ``target_metric`` are provided.
+The goal can be specified with five parameters, namely ``target_metric``,
+``target_value``, ``current_value``, ``nid`` and ``path``.  The auto-tuning
+mechanism tries to make ``current_value`` of ``target_metric`` be same to
+``target_value``.
 
 - ``user_input``: User-provided value.  Users could use any metric that they
   has interest in for the value.  Use space main workload's latency or
@@ -515,6 +579,20 @@ Currently, two ``target_metric`` are provided.
   in microseconds that measured from last quota reset to next quota reset.
   DAMOS does the measurement on its own, so only ``target_value`` need to be
   set by users at the initial time.  In other words, DAMOS does self-feedback.
+- ``node_mem_used_bp``: Specific NUMA node's used memory ratio in bp (1/10,000).
+- ``node_mem_free_bp``: Specific NUMA node's free memory ratio in bp (1/10,000).
+- ``node_memcg_used_bp``: Specific cgroup's node used memory ratio for a
+  specific NUMA node, in bp (1/10,000).
+- ``node_memcg_free_bp``: Specific cgroup's node unused memory ratio for a
+  specific NUMA node, in bp (1/10,000).
+
+``nid`` is optionally required for only ``node_mem_used_bp``,
+``node_mem_free_bp``, ``node_memcg_used_bp`` and ``node_memcg_free_bp`` to
+point the specific NUMA node.
+
+``path`` is optionally required for only ``node_memcg_used_bp`` and
+``node_memcg_free_bp`` to point the path to the cgroup.  The value should be
+the path of the memory cgroup from the cgroups mount point.
 
 To know how user-space can set the tuning goal metric, the target value, and/or
 the current value via :ref:`DAMON sysfs interface <sysfs_interface>`, refer to
@@ -569,11 +647,22 @@ number of filters for each scheme.  Each filter specifies
 - whether it is to allow (include) or reject (exclude) applying
   the scheme's action to the memory (``allow``).
 
-When multiple filters are installed, each filter is evaluated in the installed
-order.  If a part of memory is matched to one of the filter, next filters are
-ignored.  If the memory passes through the filters evaluation stage because it
-is not matched to any of the filters, applying the scheme's action to it is
-allowed, same to the behavior when no filter exists.
+For efficient handling of filters, some types of filters are handled by the
+core layer, while others are handled by operations set.  In the latter case,
+hence, support of the filter types depends on the DAMON operations set.  In
+case of the core layer-handled filters, the memory regions that excluded by the
+filter are not counted as the scheme has tried to the region.  In contrast, if
+a memory regions is filtered by an operations set layer-handled filter, it is
+counted as the scheme has tried.  This difference affects the statistics.
+
+When multiple filters are installed, the group of filters that handled by the
+core layer are evaluated first.  After that, the group of filters that handled
+by the operations layer are evaluated.  Filters in each of the groups are
+evaluated in the installed order.  If a part of memory is matched to one of the
+filter, next filters are ignored.  If the part passes through the filters
+evaluation stage because it is not matched to any of the filters, applying the
+scheme's action to it depends on the last filter's allowance type.  If the last
+filter was for allowing, the part of memory will be rejected, and vice versa.
 
 For example, let's assume 1) a filter for allowing anonymous pages and 2)
 another filter for rejecting young pages are installed in the order.  If a page
@@ -585,39 +674,29 @@ second reject-filter blocks it.  If the page is neither anonymous nor young,
 the page will pass through the filters evaluation stage since there is no
 matching filter, and the action will be applied to the page.
 
-Note that the action can equally be applied to memory that either explicitly
-filter-allowed or filters evaluation stage passed.  It means that installing
-allow-filters at the end of the list makes no practical change but only
-filters-checking overhead.
-
-For efficient handling of filters, some types of filters are handled by the
-core layer, while others are handled by operations set.  In the latter case,
-hence, support of the filter types depends on the DAMON operations set.  In
-case of the core layer-handled filters, the memory regions that excluded by the
-filter are not counted as the scheme has tried to the region.  In contrast, if
-a memory regions is filtered by an operations set layer-handled filter, it is
-counted as the scheme has tried.  This difference affects the statistics.
-
 Below ``type`` of filters are currently supported.
 
-- anonymous page
-    - Applied to pages that containing data that not stored in files.
-    - Handled by operations set layer.  Supported by only ``paddr`` set.
-- memory cgroup
-    - Applied to pages that belonging to a given cgroup.
-    - Handled by operations set layer.  Supported by only ``paddr`` set.
-- young page
-    - Applied to pages that are accessed after the last access check from the
-      scheme.
-    - Handled by operations set layer.  Supported by only ``paddr`` set.
-- address range
-    - Applied to pages that belonging to a given address range.
-    - Handled by the core logic.
-- DAMON monitoring target
-    - Applied to pages that belonging to a given DAMON monitoring target.
-    - Handled by the core logic.
+- Core layer handled
+    - addr
+        - Applied to pages that belonging to a given address range.
+    - target
+        - Applied to pages that belonging to a given DAMON monitoring target.
+- Operations layer handled, supported by only ``paddr`` operations set.
+    - anon
+        - Applied to pages that containing data that not stored in files.
+    - active
+        - Applied to active pages.
+    - memcg
+        - Applied to pages that belonging to a given cgroup.
+    - young
+        - Applied to pages that are accessed after the last access check from the
+          scheme.
+    - hugepage_size
+        - Applied to pages that managed in a given size range.
+    - unmapped
+        - Applied to pages that unmapped.
 
-To know how user-space can set the watermarks via :ref:`DAMON sysfs interface
+To know how user-space can set the filters via :ref:`DAMON sysfs interface
 <sysfs_interface>`, refer to :ref:`filters <sysfs_filters>` part of the
 documentation.
 
@@ -633,7 +712,7 @@ DAMOS accounts below statistics for each scheme, from the beginning of the
 scheme's execution.
 
 - ``nr_tried``: Total number of regions that the scheme is tried to be applied.
-- ``sz_trtied``: Total size of regions that the scheme is tried to be applied.
+- ``sz_tried``: Total size of regions that the scheme is tried to be applied.
 - ``sz_ops_filter_passed``: Total bytes that passed operations set
   layer-handled DAMOS filters.
 - ``nr_applied``: Total number of regions that the scheme is applied.

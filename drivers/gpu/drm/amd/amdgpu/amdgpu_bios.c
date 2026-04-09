@@ -84,18 +84,26 @@ static bool check_atom_bios(struct amdgpu_device *adev, size_t size)
 	return false;
 }
 
+void amdgpu_bios_release(struct amdgpu_device *adev)
+{
+	kfree(adev->bios);
+	adev->bios = NULL;
+	adev->bios_size = 0;
+}
+
 /* If you boot an IGP board with a discrete card as the primary,
  * the IGP rom is not accessible via the rom bar as the IGP rom is
  * part of the system bios.  On boot, the system bios puts a
  * copy of the igp rom at the start of vram if a discrete card is
  * present.
- * For SR-IOV, the vbios image is also put in VRAM in the VF.
+ * For SR-IOV, if dynamic critical region is not enabled,
+ * the vbios image is also put at the start of VRAM in the VF.
  */
 static bool amdgpu_read_bios_from_vram(struct amdgpu_device *adev)
 {
-	uint8_t __iomem *bios;
+	uint8_t __iomem *bios = NULL;
 	resource_size_t vram_base;
-	resource_size_t size = 256 * 1024; /* ??? */
+	u32 size = 256U * 1024U; /* ??? */
 
 	if (!(adev->flags & AMD_IS_APU))
 		if (amdgpu_device_need_post(adev))
@@ -107,21 +115,36 @@ static bool amdgpu_read_bios_from_vram(struct amdgpu_device *adev)
 
 	adev->bios = NULL;
 	vram_base = pci_resource_start(adev->pdev, 0);
-	bios = ioremap_wc(vram_base, size);
-	if (!bios)
-		return false;
 
 	adev->bios = kmalloc(size, GFP_KERNEL);
-	if (!adev->bios) {
-		iounmap(bios);
+	if (!adev->bios)
 		return false;
+
+	/* For SRIOV with dynamic critical region is enabled,
+	 * the vbios image is put at a dynamic offset of VRAM in the VF.
+	 * If dynamic critical region is disabled, follow the existing logic as on baremetal.
+	 */
+	if (amdgpu_sriov_vf(adev) && adev->virt.is_dynamic_crit_regn_enabled) {
+		if (amdgpu_virt_get_dynamic_data_info(adev,
+				AMD_SRIOV_MSG_VBIOS_IMG_TABLE_ID, adev->bios, &size)) {
+			amdgpu_bios_release(adev);
+			return false;
+		}
+	} else {
+		bios = ioremap_wc(vram_base, size);
+		if (!bios) {
+			amdgpu_bios_release(adev);
+			return false;
+		}
+
+		memcpy_fromio(adev->bios, bios, size);
+		iounmap(bios);
 	}
+
 	adev->bios_size = size;
-	memcpy_fromio(adev->bios, bios, size);
-	iounmap(bios);
 
 	if (!check_atom_bios(adev, size)) {
-		kfree(adev->bios);
+		amdgpu_bios_release(adev);
 		return false;
 	}
 
@@ -149,7 +172,7 @@ bool amdgpu_read_bios(struct amdgpu_device *adev)
 	pci_unmap_rom(adev->pdev, bios);
 
 	if (!check_atom_bios(adev, size)) {
-		kfree(adev->bios);
+		amdgpu_bios_release(adev);
 		return false;
 	}
 
@@ -189,7 +212,7 @@ static bool amdgpu_read_bios_from_rom(struct amdgpu_device *adev)
 	amdgpu_asic_read_bios_from_rom(adev, adev->bios, len);
 
 	if (!check_atom_bios(adev, len)) {
-		kfree(adev->bios);
+		amdgpu_bios_release(adev);
 		return false;
 	}
 
@@ -225,7 +248,8 @@ static bool amdgpu_read_platform_bios(struct amdgpu_device *adev)
 
 	return true;
 free_bios:
-	kfree(adev->bios);
+	amdgpu_bios_release(adev);
+
 	return false;
 }
 
@@ -327,7 +351,7 @@ static bool amdgpu_atrm_get_bios(struct amdgpu_device *adev)
 	}
 
 	if (!check_atom_bios(adev, size)) {
-		kfree(adev->bios);
+		amdgpu_bios_release(adev);
 		return false;
 	}
 	adev->bios_size = size;
@@ -392,7 +416,7 @@ static bool amdgpu_acpi_vfct_bios(struct amdgpu_device *adev)
 					     GFP_KERNEL);
 
 			if (!check_atom_bios(adev, vhdr->ImageLength)) {
-				kfree(adev->bios);
+				amdgpu_bios_release(adev);
 				return false;
 			}
 			adev->bios_size = vhdr->ImageLength;
@@ -439,6 +463,13 @@ success:
 	return true;
 }
 
+static bool amdgpu_prefer_rom_resource(struct amdgpu_device *adev)
+{
+	struct resource *res = &adev->pdev->resource[PCI_ROM_RESOURCE];
+
+	return (res->flags & IORESOURCE_ROM_SHADOW);
+}
+
 static bool amdgpu_get_bios_dgpu(struct amdgpu_device *adev)
 {
 	if (amdgpu_atrm_get_bios(adev)) {
@@ -457,14 +488,27 @@ static bool amdgpu_get_bios_dgpu(struct amdgpu_device *adev)
 		goto success;
 	}
 
-	if (amdgpu_read_platform_bios(adev)) {
-		dev_info(adev->dev, "Fetched VBIOS from platform\n");
-		goto success;
-	}
+	if (amdgpu_prefer_rom_resource(adev)) {
+		if (amdgpu_read_bios(adev)) {
+			dev_info(adev->dev, "Fetched VBIOS from ROM BAR\n");
+			goto success;
+		}
 
-	if (amdgpu_read_bios(adev)) {
-		dev_info(adev->dev, "Fetched VBIOS from ROM BAR\n");
-		goto success;
+		if (amdgpu_read_platform_bios(adev)) {
+			dev_info(adev->dev, "Fetched VBIOS from platform\n");
+			goto success;
+		}
+
+	} else {
+		if (amdgpu_read_platform_bios(adev)) {
+			dev_info(adev->dev, "Fetched VBIOS from platform\n");
+			goto success;
+		}
+
+		if (amdgpu_read_bios(adev)) {
+			dev_info(adev->dev, "Fetched VBIOS from ROM BAR\n");
+			goto success;
+		}
 	}
 
 	if (amdgpu_read_bios_from_rom(adev)) {

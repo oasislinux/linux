@@ -5,7 +5,7 @@
 
 #include <asm/cpucap-defs.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/types.h>
 /*
  * Check whether a cpucap is possible at compiletime.
@@ -71,10 +71,12 @@ cpucap_is_possible(const unsigned int cap)
 		 * KVM MPAM support doesn't rely on the host kernel supporting MPAM.
 		*/
 		return true;
+	case ARM64_HAS_PMUV3:
+		return IS_ENABLED(CONFIG_HW_PERF_EVENTS);
 	}
 
 	return true;
 }
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* __ASM_CPUCAPS_H */

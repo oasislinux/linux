@@ -13,9 +13,10 @@
 #include <ucontext.h>
 #include <sys/mman.h>
 
+#include <linux/mman.h>
 #include <linux/types.h>
 
-#include "../kselftest.h"
+#include "kselftest.h"
 
 /* Define some kernel-like types */
 typedef __u8	u8;
@@ -82,9 +83,6 @@ extern void abort_hooks(void);
 #define barrier() __asm__ __volatile__("": : :"memory")
 #ifndef noinline
 # define noinline __attribute__((noinline))
-#endif
-#ifndef __maybe_unused
-# define __maybe_unused __attribute__((__unused__))
 #endif
 
 int sys_pkey_alloc(unsigned long flags, unsigned long init_val);
@@ -193,7 +191,7 @@ static inline u32 *siginfo_get_pkey_ptr(siginfo_t *si)
 static inline int kernel_has_pkeys(void)
 {
 	/* try allocating a key and see if it succeeds */
-	int ret = sys_pkey_alloc(0, 0);
+	int ret = sys_pkey_alloc(0, PKEY_UNRESTRICTED);
 	if (ret <= 0) {
 		return 0;
 	}

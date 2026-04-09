@@ -453,17 +453,13 @@ static ssize_t host_store_hp_ssd_smart_path_status(struct device *dev,
 					 struct device_attribute *attr,
 					 const char *buf, size_t count)
 {
-	int status, len;
+	int status;
 	struct ctlr_info *h;
 	struct Scsi_Host *shost = class_to_shost(dev);
-	char tmpbuf[10];
 
 	if (!capable(CAP_SYS_ADMIN) || !capable(CAP_SYS_RAWIO))
 		return -EACCES;
-	len = count > sizeof(tmpbuf) - 1 ? sizeof(tmpbuf) - 1 : count;
-	strncpy(tmpbuf, buf, len);
-	tmpbuf[len] = '\0';
-	if (sscanf(tmpbuf, "%d", &status) != 1)
+	if (kstrtoint(buf, 10, &status))
 		return -EINVAL;
 	h = shost_to_hba(shost);
 	h->acciopath_status = !!status;
@@ -477,17 +473,13 @@ static ssize_t host_store_raid_offload_debug(struct device *dev,
 					 struct device_attribute *attr,
 					 const char *buf, size_t count)
 {
-	int debug_level, len;
+	int debug_level;
 	struct ctlr_info *h;
 	struct Scsi_Host *shost = class_to_shost(dev);
-	char tmpbuf[10];
 
 	if (!capable(CAP_SYS_ADMIN) || !capable(CAP_SYS_RAWIO))
 		return -EACCES;
-	len = count > sizeof(tmpbuf) - 1 ? sizeof(tmpbuf) - 1 : count;
-	strncpy(tmpbuf, buf, len);
-	tmpbuf[len] = '\0';
-	if (sscanf(tmpbuf, "%d", &debug_level) != 1)
+	if (kstrtoint(buf, 10, &debug_level))
 		return -EINVAL;
 	if (debug_level < 0)
 		debug_level = 0;
@@ -2670,10 +2662,8 @@ static void complete_scsi_command(struct CommandList *cp)
 	case CMD_TARGET_STATUS:
 		cmd->result |= ei->ScsiStatus;
 		/* copy the sense data */
-		if (SCSI_SENSE_BUFFERSIZE < sizeof(ei->SenseInfo))
-			sense_data_size = SCSI_SENSE_BUFFERSIZE;
-		else
-			sense_data_size = sizeof(ei->SenseInfo);
+		sense_data_size = min_t(unsigned long, SCSI_SENSE_BUFFERSIZE,
+					sizeof(ei->SenseInfo));
 		if (ei->SenseLen < sense_data_size)
 			sense_data_size = ei->SenseLen;
 		memcpy(cmd->sense_buffer, ei->SenseInfo, sense_data_size);
@@ -3636,10 +3626,7 @@ static bool hpsa_vpd_page_supported(struct ctlr_info *h,
 	if (rc != 0)
 		goto exit_unsupported;
 	pages = buf[3];
-	if ((pages + HPSA_VPD_HEADER_SZ) <= 255)
-		bufsize = pages + HPSA_VPD_HEADER_SZ;
-	else
-		bufsize = 255;
+	bufsize = min(pages + HPSA_VPD_HEADER_SZ, 255);
 
 	/* Get the whole VPD page list */
 	rc = hpsa_scsi_do_inquiry(h, scsi3addr,
@@ -6415,18 +6402,14 @@ static int hpsa_passthru_ioctl(struct ctlr_info *h,
 		return -EINVAL;
 	}
 	if (iocommand->buf_size > 0) {
-		buff = kmalloc(iocommand->buf_size, GFP_KERNEL);
-		if (buff == NULL)
-			return -ENOMEM;
 		if (iocommand->Request.Type.Direction & XFER_WRITE) {
-			/* Copy the data into the buffer we created */
-			if (copy_from_user(buff, iocommand->buf,
-				iocommand->buf_size)) {
-				rc = -EFAULT;
-				goto out_kfree;
-			}
+			buff = memdup_user(iocommand->buf, iocommand->buf_size);
+			if (IS_ERR(buff))
+				return PTR_ERR(buff);
 		} else {
-			memset(buff, 0, iocommand->buf_size);
+			buff = kzalloc(iocommand->buf_size, GFP_KERNEL);
+			if (!buff)
+				return -ENOMEM;
 		}
 	}
 	c = cmd_alloc(h);
@@ -6486,7 +6469,6 @@ static int hpsa_passthru_ioctl(struct ctlr_info *h,
 	}
 out:
 	cmd_free(h, c);
-out_kfree:
 	kfree(buff);
 	return rc;
 }
@@ -6530,18 +6512,21 @@ static int hpsa_big_passthru_ioctl(struct ctlr_info *h,
 	while (left) {
 		sz = (left > ioc->malloc_size) ? ioc->malloc_size : left;
 		buff_size[sg_used] = sz;
-		buff[sg_used] = kmalloc(sz, GFP_KERNEL);
-		if (buff[sg_used] == NULL) {
-			status = -ENOMEM;
-			goto cleanup1;
-		}
+
 		if (ioc->Request.Type.Direction & XFER_WRITE) {
-			if (copy_from_user(buff[sg_used], data_ptr, sz)) {
-				status = -EFAULT;
+			buff[sg_used] = memdup_user(data_ptr, sz);
+			if (IS_ERR(buff[sg_used])) {
+				status = PTR_ERR(buff[sg_used]);
 				goto cleanup1;
 			}
-		} else
-			memset(buff[sg_used], 0, sz);
+		} else {
+			buff[sg_used] = kzalloc(sz, GFP_KERNEL);
+			if (!buff[sg_used]) {
+				status = -ENOMEM;
+				goto cleanup1;
+			}
+		}
+
 		left -= sz;
 		data_ptr += sz;
 		sg_used++;
@@ -7238,8 +7223,7 @@ static int hpsa_controller_hard_reset(struct pci_dev *pdev,
 
 static void init_driver_version(char *driver_version, int len)
 {
-	memset(driver_version, 0, len);
-	strncpy(driver_version, HPSA " " HPSA_DRIVER_VERSION, len - 1);
+	strscpy_pad(driver_version, HPSA " " HPSA_DRIVER_VERSION, len);
 }
 
 static int write_driver_ver_to_cfgtable(struct CfgTable __iomem *cfgtable)
@@ -7641,8 +7625,8 @@ static void hpsa_free_cfgtables(struct ctlr_info *h)
 }
 
 /* Find and map CISS config table and transfer table
-+ * several items must be unmapped (freed) later
-+ * */
+ * several items must be unmapped (freed) later
+ */
 static int hpsa_find_cfgtables(struct ctlr_info *h)
 {
 	u64 cfg_offset;

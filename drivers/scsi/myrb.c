@@ -891,7 +891,7 @@ static bool myrb_enable_mmio(struct myrb_hba *cb, mbox_mmio_init_t mmio_init_fn)
 		status = mmio_init_fn(pdev, base, &mbox);
 		if (status != MYRB_STATUS_SUCCESS) {
 			dev_err(&pdev->dev,
-				"Failed to enable mailbox, statux %02X\n",
+				"Failed to enable mailbox, status %02X\n",
 				status);
 			return false;
 		}
@@ -1745,7 +1745,7 @@ static void myrb_sdev_destroy(struct scsi_device *sdev)
 	kfree(sdev->hostdata);
 }
 
-static int myrb_biosparam(struct scsi_device *sdev, struct block_device *bdev,
+static int myrb_biosparam(struct scsi_device *sdev, struct gendisk *unused,
 		sector_t capacity, int geom[])
 {
 	struct myrb_hba *cb = shost_priv(sdev->host);

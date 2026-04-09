@@ -31,9 +31,7 @@
 
 #include <linux/completion.h>
 #include <linux/device-mapper.h>
-#include <linux/kernel.h>
 #include <linux/lz4.h>
-#include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -142,12 +140,6 @@ static void finish_vdo_request_queue(void *ptr)
 	vdo_unregister_allocating_thread();
 }
 
-#ifdef MODULE
-#define MODULE_NAME THIS_MODULE->name
-#else
-#define MODULE_NAME "dm-vdo"
-#endif  /* MODULE */
-
 static const struct vdo_work_queue_type default_queue_type = {
 	.start = start_vdo_request_queue,
 	.finish = finish_vdo_request_queue,
@@ -189,6 +181,8 @@ static void assign_thread_ids(struct thread_config *config,
 
 /**
  * initialize_thread_config() - Initialize the thread mapping
+ * @counts: The number and types of threads to create.
+ * @config: The thread_config to initialize.
  *
  * If the logical, physical, and hash zone counts are all 0, a single thread will be shared by all
  * three plus the packer and recovery journal. Otherwise, there must be at least one of each type,
@@ -559,8 +553,7 @@ int vdo_make(unsigned int instance, struct device_config *config, char **reason,
 	*vdo_ptr = vdo;
 
 	snprintf(vdo->thread_name_prefix, sizeof(vdo->thread_name_prefix),
-		 "%s%u", MODULE_NAME, instance);
-	BUG_ON(vdo->thread_name_prefix[0] == '\0');
+		 "vdo%u", instance);
 	result = vdo_allocate(vdo->thread_config.thread_count,
 			      struct vdo_thread, __func__, &vdo->threads);
 	if (result != VDO_SUCCESS) {
@@ -893,6 +886,7 @@ const struct admin_state_code *vdo_get_admin_state(const struct vdo *vdo)
 
 /**
  * record_vdo() - Record the state of the VDO for encoding in the super block.
+ * @vdo: The vdo.
  */
 static void record_vdo(struct vdo *vdo)
 {
@@ -1286,7 +1280,7 @@ void vdo_enter_read_only_mode(struct vdo *vdo, int error_code)
  * vdo_is_read_only() - Check whether the VDO is read-only.
  * @vdo: The vdo.
  *
- * Return: true if the vdo is read-only.
+ * Return: True if the vdo is read-only.
  *
  * This method may be called from any thread, as opposed to examining the VDO's state field which
  * is only safe to check from the admin thread.
@@ -1300,7 +1294,7 @@ bool vdo_is_read_only(struct vdo *vdo)
  * vdo_in_read_only_mode() - Check whether a vdo is in read-only mode.
  * @vdo: The vdo to query.
  *
- * Return: true if the vdo is in read-only mode.
+ * Return: True if the vdo is in read-only mode.
  */
 bool vdo_in_read_only_mode(const struct vdo *vdo)
 {
@@ -1311,7 +1305,7 @@ bool vdo_in_read_only_mode(const struct vdo *vdo)
  * vdo_in_recovery_mode() - Check whether the vdo is in recovery mode.
  * @vdo: The vdo to query.
  *
- * Return: true if the vdo is in recovery mode.
+ * Return: True if the vdo is in recovery mode.
  */
 bool vdo_in_recovery_mode(const struct vdo *vdo)
 {

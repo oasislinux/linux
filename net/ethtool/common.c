@@ -36,6 +36,7 @@ const char netdev_features_strings[NETDEV_FEATURE_COUNT][ETH_GSTRING_LEN] = {
 	[NETIF_F_TSO_BIT] =              "tx-tcp-segmentation",
 	[NETIF_F_GSO_ROBUST_BIT] =       "tx-gso-robust",
 	[NETIF_F_TSO_ECN_BIT] =          "tx-tcp-ecn-segmentation",
+	[NETIF_F_GSO_ACCECN_BIT] =	 "tx-tcp-accecn-segmentation",
 	[NETIF_F_TSO_MANGLEID_BIT] =	 "tx-tcp-mangleid-segmentation",
 	[NETIF_F_TSO6_BIT] =             "tx-tcp6-segmentation",
 	[NETIF_F_FSO_BIT] =              "tx-fcoe-segmentation",
@@ -214,6 +215,28 @@ const char link_mode_names[][ETH_GSTRING_LEN] = {
 	__DEFINE_LINK_MODE_NAME(10, T1S, Half),
 	__DEFINE_LINK_MODE_NAME(10, T1S_P2MP, Half),
 	__DEFINE_LINK_MODE_NAME(10, T1BRR, Full),
+	__DEFINE_LINK_MODE_NAME(200000, CR, Full),
+	__DEFINE_LINK_MODE_NAME(200000, KR, Full),
+	__DEFINE_LINK_MODE_NAME(200000, DR, Full),
+	__DEFINE_LINK_MODE_NAME(200000, DR_2, Full),
+	__DEFINE_LINK_MODE_NAME(200000, SR, Full),
+	__DEFINE_LINK_MODE_NAME(200000, VR, Full),
+	__DEFINE_LINK_MODE_NAME(400000, CR2, Full),
+	__DEFINE_LINK_MODE_NAME(400000, KR2, Full),
+	__DEFINE_LINK_MODE_NAME(400000, DR2, Full),
+	__DEFINE_LINK_MODE_NAME(400000, DR2_2, Full),
+	__DEFINE_LINK_MODE_NAME(400000, SR2, Full),
+	__DEFINE_LINK_MODE_NAME(400000, VR2, Full),
+	__DEFINE_LINK_MODE_NAME(800000, CR4, Full),
+	__DEFINE_LINK_MODE_NAME(800000, KR4, Full),
+	__DEFINE_LINK_MODE_NAME(800000, DR4, Full),
+	__DEFINE_LINK_MODE_NAME(800000, DR4_2, Full),
+	__DEFINE_LINK_MODE_NAME(800000, SR4, Full),
+	__DEFINE_LINK_MODE_NAME(800000, VR4, Full),
+	__DEFINE_LINK_MODE_NAME(1600000, CR8, Full),
+	__DEFINE_LINK_MODE_NAME(1600000, KR8, Full),
+	__DEFINE_LINK_MODE_NAME(1600000, DR8, Full),
+	__DEFINE_LINK_MODE_NAME(1600000, DR8_2, Full),
 };
 static_assert(ARRAY_SIZE(link_mode_names) == __ETHTOOL_LINK_MODE_MASK_NBITS);
 
@@ -222,8 +245,11 @@ static_assert(ARRAY_SIZE(link_mode_names) == __ETHTOOL_LINK_MODE_MASK_NBITS);
 #define __LINK_MODE_LANES_CR4		4
 #define __LINK_MODE_LANES_CR8		8
 #define __LINK_MODE_LANES_DR		1
+#define __LINK_MODE_LANES_DR_2		1
 #define __LINK_MODE_LANES_DR2		2
+#define __LINK_MODE_LANES_DR2_2		2
 #define __LINK_MODE_LANES_DR4		4
+#define __LINK_MODE_LANES_DR4_2		4
 #define __LINK_MODE_LANES_DR8		8
 #define __LINK_MODE_LANES_KR		1
 #define __LINK_MODE_LANES_KR2		2
@@ -252,6 +278,9 @@ static_assert(ARRAY_SIZE(link_mode_names) == __ETHTOOL_LINK_MODE_MASK_NBITS);
 #define __LINK_MODE_LANES_T1L		1
 #define __LINK_MODE_LANES_T1S		1
 #define __LINK_MODE_LANES_T1S_P2MP	1
+#define __LINK_MODE_LANES_VR		1
+#define __LINK_MODE_LANES_VR2		2
+#define __LINK_MODE_LANES_VR4		4
 #define __LINK_MODE_LANES_VR8		8
 #define __LINK_MODE_LANES_DR8_2		8
 #define __LINK_MODE_LANES_T1BRR		1
@@ -379,8 +408,31 @@ const struct link_mode_info link_mode_params[] = {
 	__DEFINE_LINK_MODE_PARAMS(10, T1S, Half),
 	__DEFINE_LINK_MODE_PARAMS(10, T1S_P2MP, Half),
 	__DEFINE_LINK_MODE_PARAMS(10, T1BRR, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, CR, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, KR, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, DR, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, DR_2, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, SR, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, VR, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, CR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, KR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, DR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, DR2_2, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, SR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, VR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, CR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, KR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, DR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, DR4_2, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, SR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, VR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(1600000, CR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(1600000, KR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(1600000, DR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(1600000, DR8_2, Full),
 };
 static_assert(ARRAY_SIZE(link_mode_params) == __ETHTOOL_LINK_MODE_MASK_NBITS);
+EXPORT_SYMBOL_GPL(link_mode_params);
 
 const char netif_msg_class_names[][ETH_GSTRING_LEN] = {
 	[NETIF_MSG_DRV_BIT]		= "drv",
@@ -432,6 +484,7 @@ const char sof_timestamping_names[][ETH_GSTRING_LEN] = {
 	[const_ilog2(SOF_TIMESTAMPING_BIND_PHC)]     = "bind-phc",
 	[const_ilog2(SOF_TIMESTAMPING_OPT_ID_TCP)]   = "option-id-tcp",
 	[const_ilog2(SOF_TIMESTAMPING_OPT_RX_FILTER)] = "option-rx-filter",
+	[const_ilog2(SOF_TIMESTAMPING_TX_COMPLETION)] = "tx-completion",
 };
 static_assert(ARRAY_SIZE(sof_timestamping_names) == __SOF_TIMESTAMPING_CNT);
 
@@ -530,6 +583,26 @@ int __ethtool_get_link(struct net_device *dev)
 		return -EOPNOTSUPP;
 
 	return netif_running(dev) && dev->ethtool_ops->get_link(dev);
+}
+
+int ethtool_get_rx_ring_count(struct net_device *dev)
+{
+	const struct ethtool_ops *ops = dev->ethtool_ops;
+	struct ethtool_rxnfc rx_rings = {};
+	int ret;
+
+	if (ops->get_rx_ring_count)
+		return ops->get_rx_ring_count(dev);
+
+	if (!ops->get_rxnfc)
+		return -EOPNOTSUPP;
+
+	rx_rings.cmd = ETHTOOL_GRXRINGS;
+	ret = ops->get_rxnfc(dev, &rx_rings, NULL);
+	if (ret < 0)
+		return ret;
+
+	return rx_rings.data;
 }
 
 static int ethtool_get_rxnfc_rule_count(struct net_device *dev)
@@ -662,7 +735,9 @@ static u32 ethtool_get_max_rxfh_channel(struct net_device *dev)
 	if (!rxfh.indir)
 		return U32_MAX;
 
+	mutex_lock(&dev->ethtool->rss_lock);
 	ret = dev->ethtool_ops->get_rxfh(dev, &rxfh);
+	mutex_unlock(&dev->ethtool->rss_lock);
 	if (ret) {
 		current_max = U32_MAX;
 		goto out_free;
@@ -759,12 +834,64 @@ out_free:
 	return rc;
 }
 
+struct ethtool_rxfh_context *
+ethtool_rxfh_ctx_alloc(const struct ethtool_ops *ops,
+		       u32 indir_size, u32 key_size)
+{
+	size_t indir_bytes, flex_len, key_off, size;
+	struct ethtool_rxfh_context *ctx;
+	u32 priv_bytes, indir_max;
+	u16 key_max;
+
+	key_max = max(key_size, ops->rxfh_key_space);
+	indir_max = max(indir_size, ops->rxfh_indir_space);
+
+	priv_bytes = ALIGN(ops->rxfh_priv_size, sizeof(u32));
+	indir_bytes = array_size(indir_max, sizeof(u32));
+
+	key_off = size_add(priv_bytes, indir_bytes);
+	flex_len = size_add(key_off, key_max);
+	size = struct_size_t(struct ethtool_rxfh_context, data, flex_len);
+
+	ctx = kzalloc(size, GFP_KERNEL_ACCOUNT);
+	if (!ctx)
+		return NULL;
+
+	ctx->indir_size = indir_size;
+	ctx->key_size = key_size;
+	ctx->key_off = key_off;
+	ctx->priv_size = ops->rxfh_priv_size;
+
+	return ctx;
+}
+
+/* Check if fields configured for flow hash are symmetric - if src is included
+ * so is dst and vice versa.
+ */
+int ethtool_rxfh_config_is_sym(u64 rxfh)
+{
+	bool sym;
+
+	sym = rxfh == (rxfh & (RXH_IP_SRC | RXH_IP_DST |
+			       RXH_L4_B_0_1 | RXH_L4_B_2_3));
+	sym &= !!(rxfh & RXH_IP_SRC)   == !!(rxfh & RXH_IP_DST);
+	sym &= !!(rxfh & RXH_L4_B_0_1) == !!(rxfh & RXH_L4_B_2_3);
+
+	return sym;
+}
+
 int ethtool_check_ops(const struct ethtool_ops *ops)
 {
 	if (WARN_ON(ops->set_coalesce && !ops->supported_coalesce_params))
 		return -EINVAL;
 	if (WARN_ON(ops->rxfh_max_num_contexts == 1))
 		return -EINVAL;
+	if (WARN_ON(ops->supported_input_xfrm && !ops->get_rxfh_fields))
+		return -EINVAL;
+	if (WARN_ON(ops->supported_input_xfrm &&
+		    ops->rxfh_per_ctx_fields != ops->rxfh_per_ctx_key))
+		return -EINVAL;
+
 	/* NOTE: sufficiently insane drivers may swap ethtool_ops at runtime,
 	 * the fact that ops are checked at registration time does not
 	 * mean the ops attached to a netdev later on are sane.
@@ -785,6 +912,7 @@ void ethtool_ringparam_get_cfg(struct net_device *dev,
 
 	/* Driver gives us current state, we want to return current config */
 	kparam->tcp_data_split = dev->cfg->hds_config;
+	kparam->hds_thresh = dev->cfg->hds_thresh;
 }
 
 static void ethtool_init_tsinfo(struct kernel_ethtool_ts_info *info)
@@ -802,7 +930,7 @@ int ethtool_net_get_ts_info_by_phc(struct net_device *dev,
 	int err;
 
 	if (!ops->get_ts_info)
-		return -ENODEV;
+		return -EOPNOTSUPP;
 
 	/* Does ptp comes from netdev */
 	ethtool_init_tsinfo(info);
@@ -870,14 +998,23 @@ int ethtool_get_ts_info_by_phc(struct net_device *dev,
 	int err;
 
 	err = ethtool_net_get_ts_info_by_phc(dev, info, hwprov_desc);
-	if (err == -ENODEV) {
+	if (err == -ENODEV || err == -EOPNOTSUPP) {
 		struct phy_device *phy;
 
 		phy = ethtool_phy_get_ts_info_by_phc(dev, info, hwprov_desc);
 		if (IS_ERR(phy))
-			err = PTR_ERR(phy);
-		else
-			err = 0;
+			return PTR_ERR(phy);
+
+		/* Report the phc source only if we have a real
+		 * phc source with an index.
+		 */
+		if (info->phc_index >= 0) {
+			info->phc_source = HWTSTAMP_SOURCE_PHYLIB;
+			info->phc_phyindex = phy->phyindex;
+		}
+		err = 0;
+	} else if (!err && info->phc_index >= 0) {
+		info->phc_source = HWTSTAMP_SOURCE_NETDEV;
 	}
 
 	info->so_timestamping |= SOF_TIMESTAMPING_RX_SOFTWARE |
@@ -901,10 +1038,20 @@ int __ethtool_get_ts_info(struct net_device *dev,
 
 		ethtool_init_tsinfo(info);
 		if (phy_is_default_hwtstamp(phydev) &&
-		    phy_has_tsinfo(phydev))
+		    phy_has_tsinfo(phydev)) {
 			err = phy_ts_info(phydev, info);
-		else if (ops->get_ts_info)
+			/* Report the phc source only if we have a real
+			 * phc source with an index.
+			 */
+			if (!err && info->phc_index >= 0) {
+				info->phc_source = HWTSTAMP_SOURCE_PHYLIB;
+				info->phc_phyindex = phydev->phyindex;
+			}
+		} else if (ops->get_ts_info) {
 			err = ops->get_ts_info(dev, info);
+			if (!err && info->phc_index >= 0)
+				info->phc_source = HWTSTAMP_SOURCE_NETDEV;
+		}
 
 		info->so_timestamping |= SOF_TIMESTAMPING_RX_SOFTWARE |
 					 SOF_TIMESTAMPING_SOFTWARE;
@@ -1014,5 +1161,6 @@ void ethtool_rxfh_context_lost(struct net_device *dev, u32 context_id)
 	netdev_err(dev, "device error, RSS context %d lost\n", context_id);
 	ctx = xa_erase(&dev->ethtool->rss_ctx, context_id);
 	kfree(ctx);
+	ethtool_rss_notify(dev, ETHTOOL_MSG_RSS_DELETE_NTF, context_id);
 }
 EXPORT_SYMBOL(ethtool_rxfh_context_lost);

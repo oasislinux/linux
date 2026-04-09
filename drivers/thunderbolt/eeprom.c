@@ -21,7 +21,7 @@ static int tb_eeprom_ctl_write(struct tb_switch *sw, struct tb_eeprom_ctl *ctl)
 }
 
 /*
- * tb_eeprom_ctl_write() - read control word
+ * tb_eeprom_ctl_read() - read control word
  */
 static int tb_eeprom_ctl_read(struct tb_switch *sw, struct tb_eeprom_ctl *ctl)
 {
@@ -211,7 +211,7 @@ static u8 tb_crc8(u8 *data, int len)
 
 static u32 tb_crc32(void *data, size_t len)
 {
-	return ~__crc32c_le(~0, data, len);
+	return ~crc32c(~0, data, len);
 }
 
 #define TB_DROM_DATA_START		13
@@ -298,6 +298,8 @@ struct tb_drom_entry_desc {
  *
  * Does not use the cached copy in sw->drom. Used during resume to check switch
  * identity.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_drom_read_uid_only(struct tb_switch *sw, u64 *uid)
 {
@@ -709,7 +711,7 @@ static int tb_drom_device_read(struct tb_switch *sw)
  * populates the fields in @sw accordingly. Can be called for any router
  * generation.
  *
- * Returns %0 in case of success and negative errno otherwise.
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_drom_read(struct tb_switch *sw)
 {

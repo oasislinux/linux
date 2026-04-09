@@ -84,6 +84,12 @@ static int devicetree_state_flags;
 #define DTSF_APPLY_FAIL		0x01
 #define DTSF_REVERT_FAIL	0x02
 
+static int of_prop_val_eq(const struct property *p1, const struct property *p2)
+{
+	return p1->length == p2->length &&
+	       !memcmp(p1->value, p2->value, (size_t)p1->length);
+}
+
 /*
  * If a changeset apply or revert encounters an error, an attempt will
  * be made to undo partial changes, but may fail.  If the undo fails
@@ -129,7 +135,7 @@ static BLOCKING_NOTIFIER_HEAD(overlay_notify_chain);
  * @nb:		Notifier block to register
  *
  * Register for notification on overlay operations on device tree nodes. The
- * reported actions definied by @of_reconfig_change. The notifier callback
+ * reported actions defined by @of_reconfig_change. The notifier callback
  * furthermore receives a pointer to the affected device tree node.
  *
  * Note that a notifier callback is not supposed to store pointers to a device
@@ -304,9 +310,7 @@ static int add_changeset_property(struct overlay_changeset *ovcs,
 	int ret = 0;
 
 	if (target->in_livetree)
-		if (!of_prop_cmp(overlay_prop->name, "name") ||
-		    !of_prop_cmp(overlay_prop->name, "phandle") ||
-		    !of_prop_cmp(overlay_prop->name, "linux,phandle"))
+		if (is_pseudo_property(overlay_prop->name))
 			return 0;
 
 	if (target->in_livetree)
@@ -1185,6 +1189,9 @@ int of_overlay_remove(int *ovcs_id)
 {
 	struct overlay_changeset *ovcs;
 	int ret, ret_apply, ret_tmp;
+
+	if (*ovcs_id == 0)
+		return 0;
 
 	if (devicetree_corrupt()) {
 		pr_err("suspect devicetree state, refuse to remove overlay\n");

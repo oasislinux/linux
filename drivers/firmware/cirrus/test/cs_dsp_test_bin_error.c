@@ -18,6 +18,8 @@
 #include <linux/string.h>
 #include <linux/vmalloc.h>
 
+#include "../cs_dsp.h"
+
 KUNIT_DEFINE_ACTION_WRAPPER(_put_device_wrapper, put_device, struct device *);
 KUNIT_DEFINE_ACTION_WRAPPER(_cs_dsp_remove_wrapper, cs_dsp_remove, struct cs_dsp *);
 
@@ -380,11 +382,9 @@ static void bin_block_payload_len_garbage(struct kunit *test)
 
 static void cs_dsp_bin_err_test_exit(struct kunit *test)
 {
-	/*
-	 * Testing error conditions can produce a lot of log output
-	 * from cs_dsp error messages, so rate limit the test cases.
-	 */
-	usleep_range(200, 500);
+	cs_dsp_suppress_err_messages = false;
+	cs_dsp_suppress_warn_messages = false;
+	cs_dsp_suppress_info_messages = false;
 }
 
 static int cs_dsp_bin_err_test_common_init(struct kunit *test, struct cs_dsp *dsp,
@@ -451,7 +451,7 @@ static int cs_dsp_bin_err_test_common_init(struct kunit *test, struct cs_dsp *ds
 
 	local->bin_builder =
 		cs_dsp_mock_bin_init(priv, 1,
-				     cs_dsp_mock_xm_header_get_fw_version_from_regmap(priv));
+				     cs_dsp_mock_xm_header_get_fw_version(local->xm_header));
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, local->bin_builder);
 
 	/* Init cs_dsp */
@@ -474,7 +474,19 @@ static int cs_dsp_bin_err_test_common_init(struct kunit *test, struct cs_dsp *ds
 		return ret;
 
 	/* Automatically call cs_dsp_remove() when test case ends */
-	return kunit_add_action_or_reset(priv->test, _cs_dsp_remove_wrapper, dsp);
+	ret = kunit_add_action_or_reset(priv->test, _cs_dsp_remove_wrapper, dsp);
+	if (ret)
+		return ret;
+
+	/*
+	 * Testing error conditions can produce a lot of log output
+	 * from cs_dsp error messages, so suppress messages.
+	 */
+	cs_dsp_suppress_err_messages = true;
+	cs_dsp_suppress_warn_messages = true;
+	cs_dsp_suppress_info_messages = true;
+
+	return 0;
 }
 
 static int cs_dsp_bin_err_test_halo_init(struct kunit *test)
@@ -534,11 +546,6 @@ static int cs_dsp_bin_err_test_adsp2_16bit_init(struct kunit *test)
 	return cs_dsp_bin_err_test_common_init(test, dsp, 1);
 }
 
-static struct kunit_case cs_dsp_bin_err_test_cases_halo[] = {
-
-	{ } /* terminator */
-};
-
 static void cs_dsp_bin_err_block_types_desc(const struct cs_dsp_bin_test_param *param,
 					    char *desc)
 {
@@ -560,7 +567,7 @@ KUNIT_ARRAY_PARAM(bin_test_block_types,
 		  bin_test_block_types_cases,
 		  cs_dsp_bin_err_block_types_desc);
 
-static struct kunit_case cs_dsp_bin_err_test_cases_adsp2[] = {
+static struct kunit_case cs_dsp_bin_err_test_cases[] = {
 	KUNIT_CASE(bin_load_with_unknown_blocks),
 	KUNIT_CASE(bin_err_wrong_magic),
 	KUNIT_CASE(bin_err_too_short_for_header),
@@ -578,21 +585,21 @@ static struct kunit_suite cs_dsp_bin_err_test_halo = {
 	.name = "cs_dsp_bin_err_halo",
 	.init = cs_dsp_bin_err_test_halo_init,
 	.exit = cs_dsp_bin_err_test_exit,
-	.test_cases = cs_dsp_bin_err_test_cases_halo,
+	.test_cases = cs_dsp_bin_err_test_cases,
 };
 
 static struct kunit_suite cs_dsp_bin_err_test_adsp2_32bit = {
 	.name = "cs_dsp_bin_err_adsp2_32bit",
 	.init = cs_dsp_bin_err_test_adsp2_32bit_init,
 	.exit = cs_dsp_bin_err_test_exit,
-	.test_cases = cs_dsp_bin_err_test_cases_adsp2,
+	.test_cases = cs_dsp_bin_err_test_cases,
 };
 
 static struct kunit_suite cs_dsp_bin_err_test_adsp2_16bit = {
 	.name = "cs_dsp_bin_err_adsp2_16bit",
 	.init = cs_dsp_bin_err_test_adsp2_16bit_init,
 	.exit = cs_dsp_bin_err_test_exit,
-	.test_cases = cs_dsp_bin_err_test_cases_adsp2,
+	.test_cases = cs_dsp_bin_err_test_cases,
 };
 
 kunit_test_suites(&cs_dsp_bin_err_test_halo,

@@ -24,10 +24,10 @@
 #define GMAC_INTF_RATE_125M	125000000	/* 125MHz */
 
 /* SoC PHY interface control register */
-#define PHY_INTF_SEL_MII	0x00
-#define PHY_INTF_SEL_SGMII	0x01
-#define PHY_INTF_SEL_RGMII	0x02
-#define PHY_INTF_SEL_RMII	0x08
+#define S32_PHY_INTF_SEL_MII	0x00
+#define S32_PHY_INTF_SEL_SGMII	0x01
+#define S32_PHY_INTF_SEL_RGMII	0x02
+#define S32_PHY_INTF_SEL_RMII	0x08
 
 struct s32_priv_data {
 	void __iomem *ioaddr;
@@ -40,14 +40,14 @@ struct s32_priv_data {
 
 static int s32_gmac_write_phy_intf_select(struct s32_priv_data *gmac)
 {
-	writel(PHY_INTF_SEL_RGMII, gmac->ctrl_sts);
+	writel(S32_PHY_INTF_SEL_RGMII, gmac->ctrl_sts);
 
 	dev_dbg(gmac->dev, "PHY mode set to %s\n", phy_modes(*gmac->intf_mode));
 
 	return 0;
 }
 
-static int s32_gmac_init(struct platform_device *pdev, void *priv)
+static int s32_gmac_init(struct device *dev, void *priv)
 {
 	struct s32_priv_data *gmac = priv;
 	int ret;
@@ -55,31 +55,31 @@ static int s32_gmac_init(struct platform_device *pdev, void *priv)
 	/* Set initial TX interface clock */
 	ret = clk_prepare_enable(gmac->tx_clk);
 	if (ret) {
-		dev_err(&pdev->dev, "Can't enable tx clock\n");
+		dev_err(dev, "Can't enable tx clock\n");
 		return ret;
 	}
 	ret = clk_set_rate(gmac->tx_clk, GMAC_INTF_RATE_125M);
 	if (ret) {
-		dev_err(&pdev->dev, "Can't set tx clock\n");
+		dev_err(dev, "Can't set tx clock\n");
 		goto err_tx_disable;
 	}
 
 	/* Set initial RX interface clock */
 	ret = clk_prepare_enable(gmac->rx_clk);
 	if (ret) {
-		dev_err(&pdev->dev, "Can't enable rx clock\n");
+		dev_err(dev, "Can't enable rx clock\n");
 		goto err_tx_disable;
 	}
 	ret = clk_set_rate(gmac->rx_clk, GMAC_INTF_RATE_125M);
 	if (ret) {
-		dev_err(&pdev->dev, "Can't set rx clock\n");
+		dev_err(dev, "Can't set rx clock\n");
 		goto err_txrx_disable;
 	}
 
 	/* Set interface mode */
 	ret = s32_gmac_write_phy_intf_select(gmac);
 	if (ret) {
-		dev_err(&pdev->dev, "Can't set PHY interface mode\n");
+		dev_err(dev, "Can't set PHY interface mode\n");
 		goto err_txrx_disable;
 	}
 
@@ -92,30 +92,12 @@ err_tx_disable:
 	return ret;
 }
 
-static void s32_gmac_exit(struct platform_device *pdev, void *priv)
+static void s32_gmac_exit(struct device *dev, void *priv)
 {
 	struct s32_priv_data *gmac = priv;
 
 	clk_disable_unprepare(gmac->tx_clk);
 	clk_disable_unprepare(gmac->rx_clk);
-}
-
-static void s32_fix_mac_speed(void *priv, unsigned int speed, unsigned int mode)
-{
-	struct s32_priv_data *gmac = priv;
-	long tx_clk_rate;
-	int ret;
-
-	tx_clk_rate = rgmii_clock(speed);
-	if (tx_clk_rate < 0) {
-		dev_err(gmac->dev, "Unsupported/Invalid speed: %d\n", speed);
-		return;
-	}
-
-	dev_dbg(gmac->dev, "Set tx clock to %ld Hz\n", tx_clk_rate);
-	ret = clk_set_rate(gmac->tx_clk, tx_clk_rate);
-	if (ret)
-		dev_err(gmac->dev, "Can't set tx clock\n");
 }
 
 static int s32_dwmac_probe(struct platform_device *pdev)
@@ -164,7 +146,7 @@ static int s32_dwmac_probe(struct platform_device *pdev)
 	gmac->ioaddr = res.addr;
 
 	/* S32CC core feature set */
-	plat->has_gmac4 = true;
+	plat->core_type = DWMAC_CORE_GMAC4;
 	plat->pmt = 1;
 	plat->flags |= STMMAC_FLAG_SPH_DISABLE;
 	plat->rx_fifo_size = 20480;
@@ -172,7 +154,9 @@ static int s32_dwmac_probe(struct platform_device *pdev)
 
 	plat->init = s32_gmac_init;
 	plat->exit = s32_gmac_exit;
-	plat->fix_mac_speed = s32_fix_mac_speed;
+
+	plat->clk_tx_i = gmac->tx_clk;
+	plat->set_clk_tx_rate = stmmac_set_clk_tx_rate;
 
 	plat->bsp_priv = gmac;
 

@@ -13,6 +13,7 @@
 #include <linux/preempt.h>
 #include <linux/time64.h>
 #include <asm/lowcore.h>
+#include <asm/machine.h>
 #include <asm/asm.h>
 
 /* The value of the TOD clock for 1.1.1970. */
@@ -80,7 +81,7 @@ static inline void set_tod_programmable_field(u16 val)
 {
 	asm volatile(
 		"	lgr	0,%[val]\n"
-		"	sckpf\n"
+		"	sckpf"
 		:
 		: [val] "d" ((unsigned long)val)
 		: "0");
@@ -195,13 +196,6 @@ static inline unsigned long get_tod_clock_fast(void)
 	asm volatile("stckf %0" : "=Q" (clk) : : "cc");
 	return clk;
 }
-
-static inline cycles_t get_cycles(void)
-{
-	return (cycles_t) get_tod_clock() >> 2;
-}
-#define get_cycles get_cycles
-
 int get_phys_clock(unsigned long *clock);
 void init_cpu_timer(void);
 
@@ -228,6 +222,12 @@ static inline unsigned long get_tod_clock_monotonic(void)
 	preempt_enable_notrace();
 	return tod;
 }
+
+static inline cycles_t get_cycles(void)
+{
+	return (cycles_t)get_tod_clock_monotonic() >> 2;
+}
+#define get_cycles get_cycles
 
 /**
  * tod_to_ns - convert a TOD format value to nanoseconds
@@ -267,7 +267,7 @@ static __always_inline u128 eitod_to_ns(u128 todval)
  */
 static inline int tod_after(unsigned long a, unsigned long b)
 {
-	if (MACHINE_HAS_SCC)
+	if (machine_has_scc())
 		return (long) a > (long) b;
 	return a > b;
 }
@@ -281,7 +281,7 @@ static inline int tod_after(unsigned long a, unsigned long b)
  */
 static inline int tod_after_eq(unsigned long a, unsigned long b)
 {
-	if (MACHINE_HAS_SCC)
+	if (machine_has_scc())
 		return (long) a >= (long) b;
 	return a >= b;
 }

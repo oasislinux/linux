@@ -35,6 +35,7 @@
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/eswitch.h>
 #include <linux/mlx5/vport.h>
+#include "lib/mlx5.h"
 #include "lib/devcom.h"
 #include "mlx5_core.h"
 #include "eswitch.h"
@@ -231,9 +232,13 @@ static void mlx5_do_bond_work(struct work_struct *work);
 static void mlx5_ldev_free(struct kref *ref)
 {
 	struct mlx5_lag *ldev = container_of(ref, struct mlx5_lag, ref);
+	struct net *net;
 
-	if (ldev->nb.notifier_call)
-		unregister_netdevice_notifier_net(&init_net, &ldev->nb);
+	if (ldev->nb.notifier_call) {
+		net = read_pnet(&ldev->net);
+		unregister_netdevice_notifier_net(net, &ldev->nb);
+	}
+
 	mlx5_lag_mp_cleanup(ldev);
 	cancel_delayed_work_sync(&ldev->bond_work);
 	destroy_workqueue(ldev->wq);
@@ -271,7 +276,8 @@ static struct mlx5_lag *mlx5_lag_dev_alloc(struct mlx5_core_dev *dev)
 	INIT_DELAYED_WORK(&ldev->bond_work, mlx5_do_bond_work);
 
 	ldev->nb.notifier_call = mlx5_lag_netdev_event;
-	if (register_netdevice_notifier_net(&init_net, &ldev->nb)) {
+	write_pnet(&ldev->net, mlx5_core_net(dev));
+	if (register_netdevice_notifier_net(read_pnet(&ldev->net), &ldev->nb)) {
 		ldev->nb.notifier_call = NULL;
 		mlx5_core_err(dev, "Failed to register LAG netdev notifier\n");
 	}
@@ -523,8 +529,7 @@ static struct net_device *mlx5_lag_active_backup_get_netdev(struct mlx5_core_dev
 		ndev = ldev->pf[last_idx].netdev;
 	}
 
-	if (ndev)
-		dev_hold(ndev);
+	dev_hold(ndev);
 
 unlock:
 	spin_unlock_irqrestore(&lag_lock, flags);
@@ -584,8 +589,9 @@ void mlx5_modify_lag(struct mlx5_lag *ldev,
 	}
 }
 
-static int mlx5_lag_set_port_sel_mode_roce(struct mlx5_lag *ldev,
-					   unsigned long *flags)
+static int mlx5_lag_set_port_sel_mode(struct mlx5_lag *ldev,
+				      enum mlx5_lag_mode mode,
+				      unsigned long *flags)
 {
 	int first_idx = mlx5_lag_get_dev_index_by_seq(ldev, MLX5_LAG_P1);
 	struct mlx5_core_dev *dev0;
@@ -593,7 +599,12 @@ static int mlx5_lag_set_port_sel_mode_roce(struct mlx5_lag *ldev,
 	if (first_idx < 0)
 		return -EINVAL;
 
+	if (mode == MLX5_LAG_MODE_MPESW ||
+	    mode == MLX5_LAG_MODE_MULTIPATH)
+		return 0;
+
 	dev0 = ldev->pf[first_idx].dev;
+
 	if (!MLX5_CAP_PORT_SELECTION(dev0, port_select_flow_table)) {
 		if (ldev->ports > 2)
 			return -EINVAL;
@@ -608,32 +619,10 @@ static int mlx5_lag_set_port_sel_mode_roce(struct mlx5_lag *ldev,
 	return 0;
 }
 
-static void mlx5_lag_set_port_sel_mode_offloads(struct mlx5_lag *ldev,
-						struct lag_tracker *tracker,
-						enum mlx5_lag_mode mode,
-						unsigned long *flags)
-{
-	int first_idx = mlx5_lag_get_dev_index_by_seq(ldev, MLX5_LAG_P1);
-	struct lag_func *dev0;
-
-	if (first_idx < 0 || mode == MLX5_LAG_MODE_MPESW)
-		return;
-
-	dev0 = &ldev->pf[first_idx];
-	if (MLX5_CAP_PORT_SELECTION(dev0->dev, port_select_flow_table) &&
-	    tracker->tx_type == NETDEV_LAG_TX_TYPE_HASH) {
-		if (ldev->ports > 2)
-			ldev->buckets = MLX5_LAG_MAX_HASH_BUCKETS;
-		set_bit(MLX5_LAG_MODE_FLAG_HASH_BASED, flags);
-	}
-}
-
 static int mlx5_lag_set_flags(struct mlx5_lag *ldev, enum mlx5_lag_mode mode,
 			      struct lag_tracker *tracker, bool shared_fdb,
 			      unsigned long *flags)
 {
-	bool roce_lag = mode == MLX5_LAG_MODE_ROCE;
-
 	*flags = 0;
 	if (shared_fdb) {
 		set_bit(MLX5_LAG_MODE_FLAG_SHARED_FDB, flags);
@@ -643,11 +632,7 @@ static int mlx5_lag_set_flags(struct mlx5_lag *ldev, enum mlx5_lag_mode mode,
 	if (mode == MLX5_LAG_MODE_MPESW)
 		set_bit(MLX5_LAG_MODE_FLAG_FDB_SEL_MODE_NATIVE, flags);
 
-	if (roce_lag)
-		return mlx5_lag_set_port_sel_mode_roce(ldev, flags);
-
-	mlx5_lag_set_port_sel_mode_offloads(ldev, tracker, mode, flags);
-	return 0;
+	return mlx5_lag_set_port_sel_mode(ldev, mode, flags);
 }
 
 char *mlx5_get_str_port_sel_mode(enum mlx5_lag_mode mode, unsigned long flags)
@@ -1052,6 +1037,10 @@ static void mlx5_do_bond(struct mlx5_lag *ldev)
 		if (err) {
 			if (shared_fdb || roce_lag)
 				mlx5_lag_add_devices(ldev);
+			if (shared_fdb) {
+				mlx5_ldev_for_each(i, 0, ldev)
+					mlx5_eswitch_reload_ib_reps(ldev->pf[i].dev->priv.eswitch);
+			}
 
 			return;
 		} else if (roce_lag) {
@@ -1421,6 +1410,38 @@ static int __mlx5_lag_dev_add_mdev(struct mlx5_core_dev *dev)
 	return 0;
 }
 
+static void mlx5_lag_unregister_hca_devcom_comp(struct mlx5_core_dev *dev)
+{
+	mlx5_devcom_unregister_component(dev->priv.hca_devcom_comp);
+	dev->priv.hca_devcom_comp = NULL;
+}
+
+static int mlx5_lag_register_hca_devcom_comp(struct mlx5_core_dev *dev)
+{
+	struct mlx5_devcom_match_attr attr = {
+		.flags = MLX5_DEVCOM_MATCH_FLAGS_NS,
+		.net = mlx5_core_net(dev),
+	};
+	u8 len __always_unused;
+
+	mlx5_query_nic_sw_system_image_guid(dev, attr.key.buf, &len);
+
+	/* This component is use to sync adding core_dev to lag_dev and to sync
+	 * changes of mlx5_adev_devices between LAG layer and other layers.
+	 */
+	dev->priv.hca_devcom_comp =
+		mlx5_devcom_register_component(dev->priv.devc,
+					       MLX5_DEVCOM_HCA_PORTS,
+					       &attr, NULL, dev);
+	if (!dev->priv.hca_devcom_comp) {
+		mlx5_core_err(dev,
+			      "Failed to register devcom HCA component.");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 void mlx5_lag_remove_mdev(struct mlx5_core_dev *dev)
 {
 	struct mlx5_lag *ldev;
@@ -1442,6 +1463,7 @@ recheck:
 	}
 	mlx5_ldev_remove_mdev(ldev, dev);
 	mutex_unlock(&ldev->lock);
+	mlx5_lag_unregister_hca_devcom_comp(dev);
 	mlx5_ldev_put(ldev);
 }
 
@@ -1452,7 +1474,7 @@ void mlx5_lag_add_mdev(struct mlx5_core_dev *dev)
 	if (!mlx5_lag_is_supported(dev))
 		return;
 
-	if (IS_ERR_OR_NULL(dev->priv.hca_devcom_comp))
+	if (mlx5_lag_register_hca_devcom_comp(dev))
 		return;
 
 recheck:

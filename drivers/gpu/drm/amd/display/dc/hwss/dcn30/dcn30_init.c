@@ -37,6 +37,7 @@ static const struct hw_sequencer_funcs dcn30_funcs = {
 	.apply_ctx_to_hw = dce110_apply_ctx_to_hw,
 	.apply_ctx_for_surface = NULL,
 	.program_front_end_for_ctx = dcn20_program_front_end_for_ctx,
+	.clear_surface_dcc_and_tiling = dcn10_reset_surface_dcc_and_tiling,
 	.wait_for_pending_cleared = dcn10_wait_for_pending_cleared,
 	.post_unlock_program_front_end = dcn20_post_unlock_program_front_end,
 	.update_plane_addr = dcn20_update_plane_addr,
@@ -109,6 +110,7 @@ static const struct hw_sequencer_funcs dcn30_funcs = {
 	.update_visual_confirm_color = dcn10_update_visual_confirm_color,
 	.is_abm_supported = dcn21_is_abm_supported,
 	.wait_for_all_pending_updates = dcn30_wait_for_all_pending_updates,
+	.get_underflow_debug_data = dcn30_get_underflow_debug_data,
 };
 
 static const struct hwseq_private_funcs dcn30_private_funcs = {

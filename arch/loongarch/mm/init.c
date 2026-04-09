@@ -60,14 +60,10 @@ int __ref page_is_ram(unsigned long pfn)
 	return memblock_is_memory(addr) && !memblock_is_reserved(addr);
 }
 
-#ifndef CONFIG_NUMA
 void __init paging_init(void)
 {
 	unsigned long max_zone_pfns[MAX_NR_ZONES];
 
-#ifdef CONFIG_ZONE_DMA
-	max_zone_pfns[ZONE_DMA] = MAX_DMA_PFN;
-#endif
 #ifdef CONFIG_ZONE_DMA32
 	max_zone_pfns[ZONE_DMA32] = MAX_DMA32_PFN;
 #endif
@@ -75,15 +71,6 @@ void __init paging_init(void)
 
 	free_area_init(max_zone_pfns);
 }
-
-void __init mem_init(void)
-{
-	max_mapnr = max_low_pfn;
-	high_memory = (void *) __va(max_low_pfn << PAGE_SHIFT);
-
-	memblock_free_all();
-}
-#endif /* !CONFIG_NUMA */
 
 void __ref free_initmem(void)
 {
@@ -117,14 +104,6 @@ void arch_remove_memory(u64 start, u64 size, struct vmem_altmap *altmap)
 		page += vmem_altmap_offset(altmap);
 	__remove_pages(start_pfn, nr_pages, altmap);
 }
-
-#ifdef CONFIG_NUMA
-int memory_add_physaddr_to_nid(u64 start)
-{
-	return pa_to_nid(start);
-}
-EXPORT_SYMBOL_GPL(memory_add_physaddr_to_nid);
-#endif
 #endif
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
@@ -245,7 +224,7 @@ EXPORT_SYMBOL(invalid_pmd_table);
 pte_t invalid_pte_table[PTRS_PER_PTE] __page_aligned_bss;
 EXPORT_SYMBOL(invalid_pte_table);
 
-#ifdef CONFIG_EXECMEM
+#if defined(CONFIG_EXECMEM) && defined(MODULES_VADDR)
 static struct execmem_info execmem_info __ro_after_init;
 
 struct execmem_info __init *execmem_arch_setup(void)
@@ -263,4 +242,4 @@ struct execmem_info __init *execmem_arch_setup(void)
 
 	return &execmem_info;
 }
-#endif /* CONFIG_EXECMEM */
+#endif /* CONFIG_EXECMEM && MODULES_VADDR */

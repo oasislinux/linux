@@ -6,8 +6,7 @@
  *   Jan Glauber <jang@linux.vnet.ibm.com>
  */
 
-#define KMSG_COMPONENT "zpci"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "zpci: " fmt
 
 #include <linux/kernel.h>
 #include <linux/stat.h>
@@ -41,6 +40,9 @@ zpci_attr(segment1, "0x%02x\n", pfip[1]);
 zpci_attr(segment2, "0x%02x\n", pfip[2]);
 zpci_attr(segment3, "0x%02x\n", pfip[3]);
 
+#define ZPCI_FW_ATTR_RO(_name)						\
+	static struct kobj_attribute _name##_attr = __ATTR_RO(_name)
+
 static ssize_t mio_enabled_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
@@ -52,7 +54,6 @@ static DEVICE_ATTR_RO(mio_enabled);
 
 static int _do_recover(struct pci_dev *pdev, struct zpci_dev *zdev)
 {
-	u8 status;
 	int ret;
 
 	pci_stop_and_remove_bus_device(pdev);
@@ -70,16 +71,8 @@ static int _do_recover(struct pci_dev *pdev, struct zpci_dev *zdev)
 			return ret;
 	}
 
-	ret = zpci_enable_device(zdev);
-	if (ret)
-		return ret;
+	ret = zpci_reenable_device(zdev);
 
-	if (zdev->dma_table) {
-		ret = zpci_register_ioat(zdev, 0, zdev->start_dma, zdev->end_dma,
-					 virt_to_phys(zdev->dma_table), &status);
-		if (ret)
-			zpci_disable_device(zdev);
-	}
 	return ret;
 }
 
@@ -173,6 +166,13 @@ static ssize_t uid_is_unique_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(uid_is_unique);
 
+static ssize_t uid_checking_show(struct kobject *kobj,
+				 struct kobj_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", zpci_unique_uid ? 1 : 0);
+}
+ZPCI_FW_ATTR_RO(uid_checking);
+
 /* analogous to smbios index */
 static ssize_t index_show(struct device *dev,
 			  struct device_attribute *attr, char *buf)
@@ -227,7 +227,7 @@ static struct attribute *zpci_dev_attrs[] = {
 
 const struct attribute_group zpci_attr_group = {
 	.attrs = zpci_dev_attrs,
-	.bin_attrs_new = zpci_bin_attrs,
+	.bin_attrs = zpci_bin_attrs,
 };
 
 static struct attribute *pfip_attrs[] = {
@@ -242,3 +242,18 @@ const struct attribute_group pfip_attr_group = {
 	.name = "pfip",
 	.attrs = pfip_attrs,
 };
+
+static struct attribute *clp_fw_attrs[] = {
+	&uid_checking_attr.attr,
+	NULL,
+};
+
+static struct attribute_group clp_fw_attr_group = {
+	.name = "clp",
+	.attrs = clp_fw_attrs,
+};
+
+int __init __zpci_fw_sysfs_init(void)
+{
+	return sysfs_create_group(firmware_kobj, &clp_fw_attr_group);
+}

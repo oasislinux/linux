@@ -4,11 +4,12 @@
 
 #include <asm/page_64_types.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <asm/cpufeatures.h>
 #include <asm/alternative.h>
 
 #include <linux/kmsan-checks.h>
+#include <linux/mmdebug.h>
 
 /* duplicated to the one in bootmem.h */
 extern unsigned long max_pfn;
@@ -31,18 +32,28 @@ static __always_inline unsigned long __phys_addr_nodebug(unsigned long x)
 
 #ifdef CONFIG_DEBUG_VIRTUAL
 extern unsigned long __phys_addr(unsigned long);
-extern unsigned long __phys_addr_symbol(unsigned long);
 #else
 #define __phys_addr(x)		__phys_addr_nodebug(x)
-#define __phys_addr_symbol(x) \
-	((unsigned long)(x) - __START_KERNEL_map + phys_base)
 #endif
+
+static inline unsigned long __phys_addr_symbol(unsigned long x)
+{
+	unsigned long y = x - __START_KERNEL_map;
+
+	/* only check upper bounds since lower bounds will trigger carry */
+	VIRTUAL_BUG_ON(y >= KERNEL_IMAGE_SIZE);
+
+	return y + phys_base;
+}
 
 #define __phys_reloc_hide(x)	(x)
 
 void clear_page_orig(void *page);
 void clear_page_rep(void *page);
 void clear_page_erms(void *page);
+KCFI_REFERENCE(clear_page_orig);
+KCFI_REFERENCE(clear_page_rep);
+KCFI_REFERENCE(clear_page_erms);
 
 static inline void clear_page(void *page)
 {
@@ -55,13 +66,13 @@ static inline void clear_page(void *page)
 			   clear_page_rep, X86_FEATURE_REP_GOOD,
 			   clear_page_erms, X86_FEATURE_ERMS,
 			   "=D" (page),
-			   "D" (page)
-			   : "cc", "memory", "rax", "rcx");
+			   "D" (page),
+			   "cc", "memory", "rax", "rcx");
 }
 
 void copy_page(void *to, void *from);
+KCFI_REFERENCE(copy_page);
 
-#ifdef CONFIG_X86_5LEVEL
 /*
  * User space process size.  This is the first address outside the user range.
  * There are a few constraints that determine this:
@@ -92,9 +103,8 @@ static __always_inline unsigned long task_size_max(void)
 
 	return ret;
 }
-#endif	/* CONFIG_X86_5LEVEL */
 
-#endif	/* !__ASSEMBLY__ */
+#endif	/* !__ASSEMBLER__ */
 
 #ifdef CONFIG_X86_VSYSCALL_EMULATION
 # define __HAVE_ARCH_GATE_AREA 1

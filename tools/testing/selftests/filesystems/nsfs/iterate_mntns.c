@@ -3,6 +3,8 @@
 
 #define _GNU_SOURCE
 #include <fcntl.h>
+#include <linux/auto_dev-ioctl.h>
+#include <linux/errno.h>
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,7 +12,7 @@
 #include <sys/mount.h>
 #include <unistd.h>
 
-#include "../../kselftest_harness.h"
+#include "kselftest_harness.h"
 
 #define MNT_NS_COUNT 11
 #define MNT_NS_LAST_INDEX 10
@@ -144,6 +146,18 @@ TEST_F(iterate_mount_namespaces, iterate_backward)
 		fd_mnt_ns_cur = fd_mnt_ns_prev;
 		ASSERT_EQ(info.mnt_ns_id, self->mnt_ns_id[i]);
 	}
+}
+
+TEST_F(iterate_mount_namespaces, nfs_valid_ioctl)
+{
+	ASSERT_NE(ioctl(self->fd_mnt_ns[0], AUTOFS_DEV_IOCTL_OPENMOUNT, NULL), 0);
+	ASSERT_EQ(errno, ENOTTY);
+
+	ASSERT_NE(ioctl(self->fd_mnt_ns[0], AUTOFS_DEV_IOCTL_CLOSEMOUNT, NULL), 0);
+	ASSERT_EQ(errno, ENOTTY);
+
+	ASSERT_NE(ioctl(self->fd_mnt_ns[0], AUTOFS_DEV_IOCTL_READY, NULL), 0);
+	ASSERT_EQ(errno, ENOTTY);
 }
 
 TEST_HARNESS_MAIN

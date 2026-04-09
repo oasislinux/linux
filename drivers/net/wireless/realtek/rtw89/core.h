@@ -15,13 +15,16 @@
 
 struct rtw89_dev;
 struct rtw89_pci_info;
+struct rtw89_usb_info;
 struct rtw89_mac_gen_def;
 struct rtw89_phy_gen_def;
+struct rtw89_fw_blacklist;
 struct rtw89_efuse_block_cfg;
 struct rtw89_h2c_rf_tssi;
 struct rtw89_fw_txpwr_track_cfg;
 struct rtw89_phy_rfk_log_fmt;
 struct rtw89_debugfs;
+struct rtw89_regd_data;
 
 extern const struct ieee80211_ops rtw89_ops;
 
@@ -36,9 +39,13 @@ extern const struct ieee80211_ops rtw89_ops;
 #define RFREG_MASK 0xfffff
 #define INV_RF_DATA 0xffffffff
 #define BYPASS_CR_DATA 0xbabecafe
+#define RTW89_R32_EA 0xEAEAEAEA
+#define RTW89_R32_DEAD 0xDEADBEEF
 
 #define RTW89_TRACK_WORK_PERIOD	round_jiffies_relative(HZ * 2)
+#define RTW89_TRACK_PS_WORK_PERIOD msecs_to_jiffies(100)
 #define RTW89_FORBID_BA_TIMER round_jiffies_relative(HZ * 4)
+#define RTW89_PS_HANG_MAX_CNT 3
 #define CFO_TRACK_MAX_USER 64
 #define MAX_RSSI 110
 #define RSSI_FACTOR 1
@@ -128,6 +135,17 @@ enum rtw89_hci_type {
 	RTW89_HCI_TYPE_PCIE,
 	RTW89_HCI_TYPE_USB,
 	RTW89_HCI_TYPE_SDIO,
+
+	RTW89_HCI_TYPE_NUM,
+};
+
+enum rtw89_hci_dle_type {
+	RTW89_HCI_DLE_TYPE_PCIE,
+	RTW89_HCI_DLE_TYPE_USB2,
+	RTW89_HCI_DLE_TYPE_USB3,
+	RTW89_HCI_DLE_TYPE_SDIO,
+
+	RTW89_HCI_DLE_TYPE_NUM,
 };
 
 enum rtw89_core_chip_id {
@@ -137,6 +155,7 @@ enum rtw89_core_chip_id {
 	RTL8852C,
 	RTL8851B,
 	RTL8922A,
+	RTL8922D,
 };
 
 enum rtw89_chip_gen {
@@ -718,6 +737,7 @@ enum rtw89_ofdma_type {
 	RTW89_OFDMA_NUM,
 };
 
+/* neither insert new in the middle, nor change any given definition */
 enum rtw89_regulation_type {
 	RTW89_WW	= 0,
 	RTW89_ETSI	= 1,
@@ -795,6 +815,7 @@ struct rtw89_rx_phy_ppdu {
 	u8 rssi[RF_PATH_MAX];
 	u8 mac_id;
 	u8 chan_idx;
+	u8 phy_idx;
 	u8 ie;
 	u16 rate;
 	u8 rpl_avg;
@@ -826,7 +847,7 @@ enum rtw89_mac_idx {
 enum rtw89_phy_idx {
 	RTW89_PHY_0 = 0,
 	RTW89_PHY_1 = 1,
-	RTW89_PHY_MAX
+	RTW89_PHY_NUM,
 };
 
 #define __RTW89_MLD_MAX_LINK_NUM 2
@@ -995,6 +1016,7 @@ struct rtw89_port_reg {
 	u32 ptcl_dbg;
 	u32 ptcl_dbg_info;
 	u32 bcn_drop_all;
+	u32 bcn_psr_rpt;
 	u32 hiq_win[RTW89_PORT_NUM];
 };
 
@@ -1150,6 +1172,10 @@ struct rtw89_tx_desc_info {
 	u8 ampdu_density;
 	u8 ampdu_num;
 	bool sec_en;
+	bool report;
+	bool tx_cnt_lmt_en;
+	u8 sn: 4;
+	u8 tx_cnt_lmt: 6;
 	u8 addr_info_nr;
 	u8 sec_keyid;
 	u8 sec_type;
@@ -1157,6 +1183,8 @@ struct rtw89_tx_desc_info {
 	u8 sec_seq[6];
 	u16 data_rate;
 	u16 data_retry_lowest_rate;
+	u8 data_bw;
+	u8 gi_ltf;
 	bool fw_dl;
 	u16 seq;
 	bool a_ctrl_bsr;
@@ -1171,6 +1199,7 @@ struct rtw89_tx_desc_info {
 	bool ldpc;
 	bool upd_wlan_hdr;
 	bool mlo;
+	bool sw_mld;
 };
 
 struct rtw89_core_tx_request {
@@ -1200,7 +1229,7 @@ struct rtw89_mac_ax_gnt {
 struct rtw89_mac_ax_wl_act {
 	u8 wlan_act_en;
 	u8 wlan_act;
-};
+} __packed;
 
 #define RTW89_MAC_AX_COEX_GNT_NR 2
 struct rtw89_mac_ax_coex_gnt {
@@ -1317,6 +1346,7 @@ enum rtw89_btc_bt_state_cnt {
 	BTC_BCNT_POLUT_NOW,
 	BTC_BCNT_POLUT_DIFF,
 	BTC_BCNT_RATECHG,
+	BTC_BCNT_BTTXPWR_UPDATE,
 	BTC_BCNT_NUM,
 };
 
@@ -1375,6 +1405,11 @@ struct rtw89_btc_wl_smap {
 	u32 emlsr: 1;
 };
 
+enum rtw89_tfc_interval {
+	RTW89_TFC_INTERVAL_100MS,
+	RTW89_TFC_INTERVAL_2SEC,
+};
+
 enum rtw89_tfc_lv {
 	RTW89_TFC_IDLE,
 	RTW89_TFC_ULTRA_LOW,
@@ -1383,7 +1418,6 @@ enum rtw89_tfc_lv {
 	RTW89_TFC_HIGH,
 };
 
-#define RTW89_TP_SHIFT 18 /* bytes/2s --> Mbps */
 DECLARE_EWMA(tp, 10, 2);
 
 struct rtw89_traffic_stats {
@@ -1540,16 +1574,35 @@ struct rtw89_btc_u8_sta_chg {
 };
 
 struct rtw89_btc_wl_scan_info {
-	u8 band[RTW89_PHY_MAX];
+	u8 band[RTW89_PHY_NUM];
 	u8 phy_map;
 	u8 rsvd;
 };
 
 struct rtw89_btc_wl_dbcc_info {
-	u8 op_band[RTW89_PHY_MAX]; /* op band in each phy */
-	u8 scan_band[RTW89_PHY_MAX]; /* scan band in  each phy */
-	u8 real_band[RTW89_PHY_MAX];
-	u8 role[RTW89_PHY_MAX]; /* role in each phy */
+	u8 op_band[RTW89_PHY_NUM]; /* op band in each phy */
+	u8 scan_band[RTW89_PHY_NUM]; /* scan band in  each phy */
+	u8 real_band[RTW89_PHY_NUM];
+	u8 role[RTW89_PHY_NUM]; /* role in each phy */
+};
+
+struct rtw89_btc_wl_mlo_info {
+	u8 wmode[RTW89_PHY_NUM]; /* enum phl_mr_wmode */
+	u8 ch_type[RTW89_PHY_NUM]; /* enum phl_mr_ch_type */
+	u8 hwb_rf_band[RTW89_PHY_NUM]; /* enum band_type, RF-band for HW-band */
+	u8 path_rf_band[RTW89_PHY_NUM]; /* enum band_type, RF-band for PHY0/1 */
+
+	u8 wtype; /* enum phl_mr_wtype */
+	u8 mrcx_mode;
+	u8 mrcx_act_hwb_map;
+	u8 mrcx_bt_slot_rsp;
+
+	u8 rf_combination; /* enum btc_mlo_rf_combin 0:2+0, 1:0+2, 2:1+1,3:2+2 */
+	u8 mlo_en; /* MLO enable */
+	u8 mlo_adie; /* a-die count */
+	u8 dual_hw_band_en; /* both 2 HW-band link exist */
+
+	u32 link_status; /* enum mlo_dbcc_mode_type */
 };
 
 struct rtw89_btc_wl_active_role {
@@ -1761,7 +1814,8 @@ struct rtw89_btc_wl_rfk_info {
 	u32 phy_map: 2;
 	u32 band: 2;
 	u32 type: 8;
-	u32 rsvd: 14;
+	u32 con_rfk: 1;
+	u32 rsvd: 13;
 
 	u32 start_time;
 	u32 proc_time;
@@ -1785,6 +1839,13 @@ union rtw89_btc_bt_state_map {
 #define BTC_BT_AFH_GROUP 12
 #define BTC_BT_AFH_LE_GROUP 5
 
+struct rtw89_btc_bt_txpwr_desc {
+	s8 br_dbm;
+	s8 le_dbm;
+	u8 br_gain_index;
+	u8 le_gain_index;
+};
+
 struct rtw89_btc_bt_link_info {
 	struct rtw89_btc_u8_sta_chg profile_cnt;
 	struct rtw89_btc_bool_sta_chg multi_link;
@@ -1794,6 +1855,7 @@ struct rtw89_btc_bt_link_info {
 	struct rtw89_btc_bt_a2dp_desc a2dp_desc;
 	struct rtw89_btc_bt_pan_desc pan_desc;
 	union rtw89_btc_bt_state_map status;
+	struct rtw89_btc_bt_txpwr_desc bt_txpwr_desc;
 
 	u8 sut_pwr_level[BTC_PROFILE_MAX];
 	u8 golden_rx_shift[BTC_PROFILE_MAX];
@@ -1889,6 +1951,7 @@ struct rtw89_btc_wl_info {
 	struct rtw89_btc_wl_role_info_v8 role_info_v8;
 	struct rtw89_btc_wl_scan_info scan_info;
 	struct rtw89_btc_wl_dbcc_info dbcc_info;
+	struct rtw89_btc_wl_mlo_info mlo_info;
 	struct rtw89_btc_rf_para rf_para;
 	struct rtw89_btc_wl_nhm nhm;
 	union rtw89_btc_wl_state_map status;
@@ -1898,15 +1961,19 @@ struct rtw89_btc_wl_info {
 	u8 cn_report;
 	u8 coex_mode;
 	u8 pta_req_mac;
-	u8 bt_polut_type[RTW89_PHY_MAX]; /* BT polluted WL-Tx type for phy0/1  */
+	u8 bt_polut_type[RTW89_PHY_NUM]; /* BT polluted WL-Tx type for phy0/1  */
 
 	bool is_5g_hi_channel;
+	bool go_client_exist;
+	bool noa_exist;
 	bool pta_reg_mac_chg;
 	bool bg_mode;
 	bool he_mode;
 	bool scbd_change;
 	bool fw_ver_mismatch;
 	bool client_cnt_inc_2g;
+	bool link_mode_chg;
+	bool dbcc_chg;
 	u32 scbd;
 };
 
@@ -2059,6 +2126,7 @@ struct rtw89_btc_bt_info {
 	union rtw89_btc_bt_rfk_info_map rfk_info;
 
 	u8 raw_info[BTC_BTINFO_MAX]; /* raw bt info from mailbox */
+	u8 txpwr_info[BTC_BTINFO_MAX];
 	u8 rssi_level;
 
 	u32 scbd;
@@ -2230,7 +2298,7 @@ struct rtw89_btc_fbtc_rpt_ctrl_v4 {
 	struct rtw89_btc_fbtc_rpt_ctrl_wl_fw_info wl_fw_info;
 	struct rtw89_btc_fbtc_rpt_ctrl_bt_mailbox bt_mbx_info;
 	__le32 bt_cnt[BTC_BCNT_STA_MAX];
-	struct rtw89_mac_ax_gnt gnt_val[RTW89_PHY_MAX];
+	struct rtw89_mac_ax_gnt gnt_val[RTW89_PHY_NUM];
 } __packed;
 
 struct rtw89_btc_fbtc_rpt_ctrl_v5 {
@@ -2238,7 +2306,7 @@ struct rtw89_btc_fbtc_rpt_ctrl_v5 {
 	u8 rsvd;
 	__le16 rsvd1;
 
-	u8 gnt_val[RTW89_PHY_MAX][4];
+	u8 gnt_val[RTW89_PHY_NUM][4];
 	__le16 bt_cnt[BTC_BCNT_STA_MAX];
 
 	struct rtw89_btc_fbtc_rpt_ctrl_info_v5 rpt_info;
@@ -2250,7 +2318,7 @@ struct rtw89_btc_fbtc_rpt_ctrl_v105 {
 	u8 rsvd;
 	__le16 rsvd1;
 
-	u8 gnt_val[RTW89_PHY_MAX][4];
+	u8 gnt_val[RTW89_PHY_NUM][4];
 	__le16 bt_cnt[BTC_BCNT_STA_MAX_V105];
 
 	struct rtw89_btc_fbtc_rpt_ctrl_info_v5 rpt_info;
@@ -2263,7 +2331,7 @@ struct rtw89_btc_fbtc_rpt_ctrl_v7 {
 	u8 rsvd1;
 	u8 rsvd2;
 
-	u8 gnt_val[RTW89_PHY_MAX][4];
+	u8 gnt_val[RTW89_PHY_NUM][4];
 	__le16 bt_cnt[BTC_BCNT_STA_MAX_V105];
 
 	struct rtw89_btc_fbtc_rpt_ctrl_info_v8 rpt_info;
@@ -2276,7 +2344,7 @@ struct rtw89_btc_fbtc_rpt_ctrl_v8 {
 	u8 rpt_len_max_l; /* BTC_RPT_MAX bit0~7 */
 	u8 rpt_len_max_h; /* BTC_RPT_MAX bit8~15 */
 
-	u8 gnt_val[RTW89_PHY_MAX][4];
+	u8 gnt_val[RTW89_PHY_NUM][4];
 	__le16 bt_cnt[BTC_BCNT_STA_MAX_V105];
 
 	struct rtw89_btc_fbtc_rpt_ctrl_info_v8 rpt_info;
@@ -2897,12 +2965,32 @@ struct rtw89_btc_trx_info {
 	u32 rx_err_ratio;
 };
 
+enum btc_rf_path {
+	BTC_RF_S0 = 0,
+	BTC_RF_S1 = 1,
+	BTC_RF_NUM,
+};
+
+struct rtw89_btc_fbtc_outsrc_set_info {
+	u8 rf_band[BTC_RF_NUM]; /* 0:2G, 1:non-2G */
+	u8 btg_rx[BTC_RF_NUM];
+	u8 nbtg_tx[BTC_RF_NUM];
+
+	struct rtw89_mac_ax_gnt gnt_set[BTC_RF_NUM]; /* refer to btc_gnt_ctrl */
+	struct rtw89_mac_ax_wl_act wlact_set[BTC_RF_NUM]; /* BT0/BT1 */
+
+	u8 pta_req_hw_band;
+	u8 rf_gbt_source;
+} __packed;
+
 union rtw89_btc_fbtc_slot_u {
 	struct rtw89_btc_fbtc_slot v1[CXST_MAX];
 	struct rtw89_btc_fbtc_slot_v7 v7[CXST_MAX];
 };
 
 struct rtw89_btc_dm {
+	struct rtw89_btc_fbtc_outsrc_set_info ost_info_last; /* outsrc API setup info */
+	struct rtw89_btc_fbtc_outsrc_set_info ost_info; /* outsrc API setup info */
 	union rtw89_btc_fbtc_slot_u slot;
 	union rtw89_btc_fbtc_slot_u slot_now;
 	struct rtw89_btc_fbtc_tdma tdma;
@@ -2992,6 +3080,7 @@ enum rtw89_btc_btf_fw_event {
 	BTF_EVNT_BT_LEAUDIO_INFO = 7, /* fwc2hfunc > 1 */
 	BTF_EVNT_BUF_OVERFLOW,
 	BTF_EVNT_C2H_LOOPBACK,
+	BTF_EVNT_BT_QUERY_TXPWR, /* fwc2hfunc > 3 */
 	BTF_EVNT_MAX,
 };
 
@@ -3040,6 +3129,7 @@ struct rtw89_btc_rpt_cmn_info {
 union rtw89_btc_fbtc_btafh_info {
 	struct rtw89_btc_fbtc_btafh v1;
 	struct rtw89_btc_fbtc_btafh_v2 v2;
+	struct rtw89_btc_fbtc_btafh_v7 v7;
 };
 
 struct rtw89_btc_report_ctrl_state {
@@ -3109,31 +3199,6 @@ enum rtw89_btc_btfre_type {
 	BTFRE_MAX,
 };
 
-struct rtw89_btc_btf_fwinfo {
-	u32 cnt_c2h;
-	u32 cnt_h2c;
-	u32 cnt_h2c_fail;
-	u32 event[BTF_EVNT_MAX];
-
-	u32 err[BTFRE_MAX];
-	u32 len_mismch;
-	u32 fver_mismch;
-	u32 rpt_en_map;
-
-	struct rtw89_btc_report_ctrl_state rpt_ctrl;
-	struct rtw89_btc_rpt_fbtc_tdma rpt_fbtc_tdma;
-	struct rtw89_btc_rpt_fbtc_slots rpt_fbtc_slots;
-	struct rtw89_btc_rpt_fbtc_cysta rpt_fbtc_cysta;
-	struct rtw89_btc_rpt_fbtc_step rpt_fbtc_step;
-	struct rtw89_btc_rpt_fbtc_nullsta rpt_fbtc_nullsta;
-	struct rtw89_btc_rpt_fbtc_mreg rpt_fbtc_mregval;
-	struct rtw89_btc_rpt_fbtc_gpio_dbg rpt_fbtc_gpio_dbg;
-	struct rtw89_btc_rpt_fbtc_btver rpt_fbtc_btver;
-	struct rtw89_btc_rpt_fbtc_btscan rpt_fbtc_btscan;
-	struct rtw89_btc_rpt_fbtc_btafh rpt_fbtc_btafh;
-	struct rtw89_btc_rpt_fbtc_btdev rpt_fbtc_btdev;
-};
-
 struct rtw89_btc_ver {
 	enum rtw89_core_chip_id chip_id;
 	u32 fw_ver_code;
@@ -3160,6 +3225,35 @@ struct rtw89_btc_ver {
 	u8 drvinfo_type;
 	u16 info_buf;
 	u8 max_role_num;
+	u8 fcxosi;
+	u8 fcxmlo;
+	u8 bt_desired;
+};
+
+struct rtw89_btc_btf_fwinfo {
+	u32 cnt_c2h;
+	u32 cnt_h2c;
+	u32 cnt_h2c_fail;
+	u32 event[BTF_EVNT_MAX];
+
+	u32 err[BTFRE_MAX];
+	u32 len_mismch;
+	u32 fver_mismch;
+	u32 rpt_en_map;
+
+	struct rtw89_btc_ver fw_subver;
+	struct rtw89_btc_report_ctrl_state rpt_ctrl;
+	struct rtw89_btc_rpt_fbtc_tdma rpt_fbtc_tdma;
+	struct rtw89_btc_rpt_fbtc_slots rpt_fbtc_slots;
+	struct rtw89_btc_rpt_fbtc_cysta rpt_fbtc_cysta;
+	struct rtw89_btc_rpt_fbtc_step rpt_fbtc_step;
+	struct rtw89_btc_rpt_fbtc_nullsta rpt_fbtc_nullsta;
+	struct rtw89_btc_rpt_fbtc_mreg rpt_fbtc_mregval;
+	struct rtw89_btc_rpt_fbtc_gpio_dbg rpt_fbtc_gpio_dbg;
+	struct rtw89_btc_rpt_fbtc_btver rpt_fbtc_btver;
+	struct rtw89_btc_rpt_fbtc_btscan rpt_fbtc_btscan;
+	struct rtw89_btc_rpt_fbtc_btafh rpt_fbtc_btafh;
+	struct rtw89_btc_rpt_fbtc_btdev rpt_fbtc_btdev;
 };
 
 #define RTW89_BTC_POLICY_MAXLEN 512
@@ -3174,10 +3268,10 @@ struct rtw89_btc {
 	struct rtw89_btc_btf_fwinfo fwinfo;
 	struct rtw89_btc_dbg dbg;
 
-	struct work_struct eapol_notify_work;
-	struct work_struct arp_notify_work;
-	struct work_struct dhcp_notify_work;
-	struct work_struct icmp_notify_work;
+	struct wiphy_work eapol_notify_work;
+	struct wiphy_work arp_notify_work;
+	struct wiphy_work dhcp_notify_work;
+	struct wiphy_work icmp_notify_work;
 
 	u32 bt_req_len;
 
@@ -3291,11 +3385,18 @@ struct rtw89_ra_info {
 	u8 cr_tbl_sel:1;
 	u8 fix_giltf_en:1;
 	u8 fix_giltf:3;
-	u8 rsvd2:1;
+	u8 partial_bw_er:1;
 	u8 csi_mcs_ss_idx;
 	u8 csi_mode:2;
 	u8 csi_gi_ltf:3;
 	u8 csi_bw:3;
+	/* after v1 */
+	u8 is_noisy:1;
+	u8 psra_en:1;
+	u8 rsvd0:1;
+	u8 macid_msb:2;
+	u8 band:2; /* enum rtw89_band */
+	u8 is_new_dbgreg:1;
 };
 
 #define RTW89_PPDU_MAC_INFO_USR_SIZE 4
@@ -3374,9 +3475,11 @@ struct rtw89_sec_cam_entry {
 
 struct rtw89_sta_link {
 	struct rtw89_sta *rtwsta;
+	struct list_head dlink_schd;
 	unsigned int link_id;
 
 	u8 mac_id;
+	u8 tx_retry;
 	bool er_cap;
 	struct rtw89_vif_link *rtwvif_link;
 	struct rtw89_ra_info ra;
@@ -3412,6 +3515,7 @@ struct rtw89_efuse {
 	u8 addr[ETH_ALEN];
 	u8 rfe_type;
 	char country_code[2];
+	u8 adc_td;
 };
 
 struct rtw89_phy_rate_pattern {
@@ -3421,16 +3525,37 @@ struct rtw89_phy_rate_pattern {
 	bool enable;
 };
 
+#define RTW89_TX_DONE			0x0
+#define RTW89_TX_RETRY_LIMIT		0x1
+#define RTW89_TX_LIFE_TIME		0x2
+#define RTW89_TX_MACID_DROP		0x3
+
+#define RTW89_MAX_TX_RPTS		16
+#define RTW89_MAX_TX_RPTS_MASK		(RTW89_MAX_TX_RPTS - 1)
+struct rtw89_tx_rpt {
+	struct sk_buff *skbs[RTW89_MAX_TX_RPTS];
+	/* protect skbs array access/modification */
+	spinlock_t skb_lock;
+	atomic_t sn;
+};
+
+#define RTW89_TX_WAIT_WORK_TIMEOUT msecs_to_jiffies(500)
 struct rtw89_tx_wait_info {
 	struct rcu_head rcu_head;
+	struct list_head list;
 	struct completion completion;
+	struct sk_buff *skb;
 	bool tx_done;
 };
 
 struct rtw89_tx_skb_data {
 	struct rtw89_tx_wait_info __rcu *wait;
+	u8 tx_rpt_sn;
+	u8 tx_pkt_cnt_lmt;
 	u8 hci_priv[];
 };
+
+#define RTW89_SCAN_NULL_TIMEOUT 30
 
 #define RTW89_ROC_IDLE_TIMEOUT 500
 #define RTW89_ROC_TX_TIMEOUT 30
@@ -3440,14 +3565,13 @@ enum rtw89_roc_state {
 	RTW89_ROC_MGMT,
 };
 
-#define RTW89_ROC_BY_LINK_INDEX 0
-
 struct rtw89_roc {
 	struct ieee80211_channel chan;
-	struct delayed_work roc_work;
+	struct wiphy_delayed_work roc_work;
 	enum ieee80211_roc_type type;
 	enum rtw89_roc_state state;
 	int duration;
+	unsigned int link_id;
 };
 
 #define RTW89_P2P_MAX_NOA_NUM 2
@@ -3478,8 +3602,17 @@ struct rtw89_p2p_noa_setter {
 	u8 noa_index;
 };
 
+struct rtw89_ps_noa_once_handler {
+	bool in_duration;
+	u64 tsf_begin;
+	u64 tsf_end;
+	struct wiphy_delayed_work set_work;
+	struct wiphy_delayed_work clr_work;
+};
+
 struct rtw89_vif_link {
 	struct rtw89_vif *rtwvif;
+	struct list_head dlink_schd;
 	unsigned int link_id;
 
 	bool chanctx_assigned; /* only valid when running with chanctx_ops */
@@ -3498,9 +3631,12 @@ struct rtw89_vif_link {
 	u8 self_role;
 	u8 wmm;
 	u8 bcn_hit_cond;
+	u8 bcn_bw_idx;
 	u8 hit_rule;
 	u8 last_noa_nr;
 	u64 sync_bcn_tsf;
+	u64 last_sync_bcn_tsf;
+	bool rand_tsf_done;
 	bool trigger;
 	bool lsig_txop;
 	u8 tgt_ind;
@@ -3514,13 +3650,17 @@ struct rtw89_vif_link {
 	bool pre_pwr_diff_en;
 	bool pwr_diff_en;
 	u8 def_tri_idx;
-	struct work_struct update_beacon_work;
+	struct wiphy_work update_beacon_work;
+	struct wiphy_delayed_work csa_beacon_work;
 	struct rtw89_addr_cam_entry addr_cam;
 	struct rtw89_bssid_cam_entry bssid_cam;
 	struct ieee80211_tx_queue_params tx_params[IEEE80211_NUM_ACS];
 	struct rtw89_phy_rate_pattern rate_pattern;
 	struct list_head general_pkt_list;
 	struct rtw89_p2p_noa_setter p2p_noa;
+	struct rtw89_ps_noa_once_handler noa_once;
+	struct wiphy_delayed_work mcc_gc_detect_beacon_work;
+	u8 detect_bcn_count;
 };
 
 enum rtw89_lv1_rcvy_step {
@@ -3545,6 +3685,8 @@ struct rtw89_hci_ops {
 	void (*write8)(struct rtw89_dev *rtwdev, u32 addr, u8 data);
 	void (*write16)(struct rtw89_dev *rtwdev, u32 addr, u16 data);
 	void (*write32)(struct rtw89_dev *rtwdev, u32 addr, u32 data);
+
+	u32 (*read32_pci_cfg)(struct rtw89_dev *rtwdev, u32 addr);
 
 	int (*mac_pre_init)(struct rtw89_dev *rtwdev);
 	int (*mac_pre_deinit)(struct rtw89_dev *rtwdev);
@@ -3577,9 +3719,11 @@ struct rtw89_hci_ops {
 struct rtw89_hci_info {
 	const struct rtw89_hci_ops *ops;
 	enum rtw89_hci_type type;
+	enum rtw89_hci_dle_type dle_type;
 	u32 rpwm_addr;
 	u32 cpwm_addr;
 	bool paused;
+	bool tx_rpt_enabled;
 };
 
 struct rtw89_chip_ops {
@@ -3626,6 +3770,8 @@ struct rtw89_chip_ops {
 			       enum rtw89_phy_idx phy_idx);
 	int (*init_txpwr_unit)(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx);
 	u8 (*get_thermal)(struct rtw89_dev *rtwdev, enum rtw89_rf_path rf_path);
+	u32 (*chan_to_rf18_val)(struct rtw89_dev *rtwdev,
+				const struct rtw89_chan *chan);
 	void (*ctrl_btg_bt_rx)(struct rtw89_dev *rtwdev, bool en,
 			       enum rtw89_phy_idx phy_idx);
 	void (*query_ppdu)(struct rtw89_dev *rtwdev,
@@ -3654,6 +3800,7 @@ struct rtw89_chip_ops {
 	void (*fill_txdesc_fwcmd)(struct rtw89_dev *rtwdev,
 				  struct rtw89_tx_desc_info *desc_info,
 				  void *txdesc);
+	u8 (*get_ch_dma[RTW89_HCI_TYPE_NUM])(struct rtw89_dev *rtwdev, u8 qsel);
 	int (*cfg_ctrl_path)(struct rtw89_dev *rtwdev, bool wl);
 	int (*mac_cfg_gnt)(struct rtw89_dev *rtwdev,
 			   const struct rtw89_mac_ax_coex_gnt *gnt_cfg);
@@ -3672,6 +3819,11 @@ struct rtw89_chip_ops {
 	int (*h2c_ampdu_cmac_tbl)(struct rtw89_dev *rtwdev,
 				  struct rtw89_vif_link *rtwvif_link,
 				  struct rtw89_sta_link *rtwsta_link);
+	int (*h2c_txtime_cmac_tbl)(struct rtw89_dev *rtwdev,
+				   struct rtw89_sta_link *rtwsta_link);
+	int (*h2c_punctured_cmac_tbl)(struct rtw89_dev *rtwdev,
+				      struct rtw89_vif_link *rtwvif_link,
+				      u16 punctured);
 	int (*h2c_default_dmac_tbl)(struct rtw89_dev *rtwdev,
 				    struct rtw89_vif_link *rtwvif_link,
 				    struct rtw89_sta_link *rtwsta_link);
@@ -3756,7 +3908,7 @@ struct rtw89_scan_option {
 	u16 slow_pd;
 	u16 norm_cy;
 	u8 opch_end;
-	u16 delay;
+	u16 delay; /* in unit of ms */
 	u64 prohib_chan;
 	enum rtw89_phy_idx band;
 	enum rtw89_scan_be_operation operation;
@@ -3978,7 +4130,11 @@ struct rtw89_rfe_parms {
 	struct rtw89_txpwr_rule_2ghz rule_2ghz;
 	struct rtw89_txpwr_rule_5ghz rule_5ghz;
 	struct rtw89_txpwr_rule_6ghz rule_6ghz;
+	struct rtw89_txpwr_rule_2ghz rule_da_2ghz;
+	struct rtw89_txpwr_rule_5ghz rule_da_5ghz;
+	struct rtw89_txpwr_rule_6ghz rule_da_6ghz;
 	struct rtw89_tx_shape tx_shape;
+	bool has_da;
 };
 
 struct rtw89_rfe_parms_conf {
@@ -4073,9 +4229,15 @@ struct rtw89_rfe_data {
 	struct rtw89_txpwr_lmt_2ghz_data lmt_2ghz;
 	struct rtw89_txpwr_lmt_5ghz_data lmt_5ghz;
 	struct rtw89_txpwr_lmt_6ghz_data lmt_6ghz;
+	struct rtw89_txpwr_lmt_2ghz_data da_lmt_2ghz;
+	struct rtw89_txpwr_lmt_5ghz_data da_lmt_5ghz;
+	struct rtw89_txpwr_lmt_6ghz_data da_lmt_6ghz;
 	struct rtw89_txpwr_lmt_ru_2ghz_data lmt_ru_2ghz;
 	struct rtw89_txpwr_lmt_ru_5ghz_data lmt_ru_5ghz;
 	struct rtw89_txpwr_lmt_ru_6ghz_data lmt_ru_6ghz;
+	struct rtw89_txpwr_lmt_ru_2ghz_data da_lmt_ru_2ghz;
+	struct rtw89_txpwr_lmt_ru_5ghz_data da_lmt_ru_5ghz;
+	struct rtw89_txpwr_lmt_ru_6ghz_data da_lmt_ru_6ghz;
 	struct rtw89_tx_shape_lmt_data tx_shape_lmt;
 	struct rtw89_tx_shape_lmt_ru_data tx_shape_lmt_ru;
 	struct rtw89_rfe_parms rfe_parms;
@@ -4189,10 +4351,12 @@ struct rtw89_edcca_regs {
 	u32 edcca_p_mask;
 	u32 ppdu_level;
 	u32 ppdu_mask;
-	u32 rpt_a;
-	u32 rpt_b;
-	u32 rpt_sel;
-	u32 rpt_sel_mask;
+	struct rtw89_edcca_p_regs {
+		u32 rpt_a;
+		u32 rpt_b;
+		u32 rpt_sel;
+		u32 rpt_sel_mask;
+	} p[RTW89_PHY_NUM];
 	u32 rpt_sel_be;
 	u32 rpt_sel_be_mask;
 	u32 tx_collision_t2r_st;
@@ -4231,6 +4395,7 @@ enum rtw89_chanctx_state {
 enum rtw89_chanctx_callbacks {
 	RTW89_CHANCTX_CALLBACK_PLACEHOLDER,
 	RTW89_CHANCTX_CALLBACK_RFK,
+	RTW89_CHANCTX_CALLBACK_TAS,
 
 	NUM_OF_RTW89_CHANCTX_CALLBACKS,
 };
@@ -4239,6 +4404,9 @@ struct rtw89_chanctx_listener {
 	void (*callbacks[NUM_OF_RTW89_CHANCTX_CALLBACKS])
 		(struct rtw89_dev *rtwdev, enum rtw89_chanctx_state state);
 };
+
+#define RTW89_NHM_TH_NUM 11
+#define RTW89_NHM_RPT_NUM 12
 
 struct rtw89_chip_info {
 	enum rtw89_core_chip_id chip_id;
@@ -4251,14 +4419,15 @@ struct rtw89_chip_info {
 	bool try_ce_fw;
 	u8 bbmcu_nr;
 	u32 needed_fw_elms;
+	const struct rtw89_fw_blacklist *fw_blacklist;
 	u32 fifo_size;
 	bool small_fifo_size;
 	u32 dle_scc_rsvd_size;
 	u16 max_amsdu_limit;
 	bool dis_2g_40m_ul_ofdma;
 	u32 rsvd_ple_ofst;
-	const struct rtw89_hfc_param_ini *hfc_param_ini;
-	const struct rtw89_dle_mem *dle_mem;
+	const struct rtw89_hfc_param_ini *hfc_param_ini[RTW89_HCI_TYPE_NUM];
+	const struct rtw89_dle_mem *dle_mem[RTW89_HCI_DLE_TYPE_NUM];
 	u8 wde_qempty_acq_grpnum;
 	u8 wde_qempty_mgq_grpsel;
 	u32 rf_base_addr[2];
@@ -4271,10 +4440,16 @@ struct rtw89_chip_info {
 	bool support_unii4;
 	bool support_rnr;
 	bool support_ant_gain;
+	bool support_tas;
+	bool support_sar_by_ant;
+	bool support_noise;
 	bool ul_tb_waveform_ctrl;
 	bool ul_tb_pwr_diff;
+	bool rx_freq_frome_ie;
 	bool hw_sec_hdr;
 	bool hw_mgmt_tx_encrypt;
+	bool hw_tkip_crypto;
+	bool hw_mlo_bmc_crypto;
 	u8 rf_path_num;
 	u8 tx_nss;
 	u8 rx_nss;
@@ -4284,6 +4459,7 @@ struct rtw89_chip_info {
 	u8 bacam_num;
 	u8 bacam_dynamic_num;
 	enum rtw89_bacam_ver bacam_ver;
+	u8 addrcam_ver;
 	u8 ppdu_max_usr;
 
 	u8 sec_ctrl_efuse_size;
@@ -4318,7 +4494,6 @@ struct rtw89_chip_info {
 
 	u32 para_ver;
 	u32 wlcx_desired;
-	u8 btcx_desired;
 	u8 scbd;
 	u8 mailbox;
 
@@ -4353,6 +4528,8 @@ struct rtw89_chip_info {
 	bool cfo_hw_comp;
 	const struct rtw89_reg_def *dcfo_comp;
 	u8 dcfo_comp_sft;
+	const struct rtw89_reg_def (*nhm_report)[RTW89_NHM_RPT_NUM];
+	const struct rtw89_reg_def (*nhm_th)[RTW89_NHM_TH_NUM];
 	const struct rtw89_imr_info *imr_info;
 	const struct rtw89_imr_table *imr_dmac_table;
 	const struct rtw89_imr_table *imr_cmac_table;
@@ -4374,6 +4551,7 @@ struct rtw89_chip_variant {
 
 union rtw89_bus_info {
 	const struct rtw89_pci_info *pci;
+	const struct rtw89_usb_info *usb;
 };
 
 struct rtw89_driver_info {
@@ -4414,17 +4592,23 @@ struct rtw89_completion_data {
 	u8 buf[RTW89_COMPLETION_BUF_SIZE];
 };
 
-struct rtw89_wait_info {
-	atomic_t cond;
+struct rtw89_wait_response {
+	struct rcu_head rcu_head;
 	struct completion completion;
 	struct rtw89_completion_data data;
+};
+
+struct rtw89_wait_info {
+	atomic_t cond;
+	struct rtw89_completion_data data;
+	struct rtw89_wait_response __rcu *resp;
 };
 
 #define RTW89_WAIT_FOR_COND_TIMEOUT msecs_to_jiffies(100)
 
 static inline void rtw89_init_wait(struct rtw89_wait_info *wait)
 {
-	init_completion(&wait->completion);
+	rcu_assign_pointer(wait->resp, NULL);
 	atomic_set(&wait->cond, RTW89_WAIT_COND_IDLE);
 }
 
@@ -4458,11 +4642,21 @@ enum rtw89_fw_type {
 	RTW89_FW_LOGFMT = 255,
 };
 
+#define RTW89_FW_FEATURE_GROUP(_grp, _features...) \
+	RTW89_FW_FEATURE_##_grp##_MIN, \
+	__RTW89_FW_FEATURE_##_grp##_S = RTW89_FW_FEATURE_##_grp##_MIN - 1, \
+	_features \
+	__RTW89_FW_FEATURE_##_grp##_E, \
+	RTW89_FW_FEATURE_##_grp##_MAX = __RTW89_FW_FEATURE_##_grp##_E - 1
+
 enum rtw89_fw_feature {
 	RTW89_FW_FEATURE_OLD_HT_RA_FORMAT,
 	RTW89_FW_FEATURE_SCAN_OFFLOAD,
 	RTW89_FW_FEATURE_TX_WAKE,
-	RTW89_FW_FEATURE_CRASH_TRIGGER,
+	RTW89_FW_FEATURE_GROUP(CRASH_TRIGGER,
+			       RTW89_FW_FEATURE_CRASH_TRIGGER_TYPE_0,
+			       RTW89_FW_FEATURE_CRASH_TRIGGER_TYPE_1,
+	),
 	RTW89_FW_FEATURE_NO_PACKET_DROP,
 	RTW89_FW_FEATURE_NO_DEEP_PS,
 	RTW89_FW_FEATURE_NO_LPS_PG,
@@ -4473,11 +4667,19 @@ enum rtw89_fw_feature {
 	RTW89_FW_FEATURE_RFK_PRE_NOTIFY_V0,
 	RTW89_FW_FEATURE_RFK_PRE_NOTIFY_V1,
 	RTW89_FW_FEATURE_RFK_RXDCK_V0,
+	RTW89_FW_FEATURE_RFK_IQK_V0,
 	RTW89_FW_FEATURE_NO_WOW_CPU_IO_RX,
 	RTW89_FW_FEATURE_NOTIFY_AP_INFO,
 	RTW89_FW_FEATURE_CH_INFO_BE_V0,
 	RTW89_FW_FEATURE_LPS_CH_INFO,
 	RTW89_FW_FEATURE_NO_PHYCAP_P1,
+	RTW89_FW_FEATURE_NO_POWER_DIFFERENCE,
+	RTW89_FW_FEATURE_BEACON_LOSS_COUNT_V1,
+	RTW89_FW_FEATURE_SCAN_OFFLOAD_EXTRA_OP,
+	RTW89_FW_FEATURE_RFK_NTFY_MCC_V0,
+	RTW89_FW_FEATURE_LPS_DACK_BY_C2H_REG,
+	RTW89_FW_FEATURE_BEACON_TRACKING,
+	RTW89_FW_FEATURE_ADDR_CAM_V0,
 };
 
 struct rtw89_fw_suit {
@@ -4536,6 +4738,9 @@ struct rtw89_fw_elm_info {
 	struct rtw89_phy_table *rf_nctl;
 	struct rtw89_fw_txpwr_track_cfg *txpwr_trk;
 	struct rtw89_phy_rfk_log_fmt *rfk_log_fmt;
+	const struct rtw89_regd_data *regd;
+	const struct rtw89_fw_element_hdr *afe;
+	const struct rtw89_fw_element_hdr *diag_mac;
 };
 
 enum rtw89_fw_mss_dev_type {
@@ -4574,6 +4779,10 @@ struct rtw89_fw_info {
 #define RTW89_CHK_FW_FEATURE(_feat, _fw) \
 	(!!((_fw)->feature_map & BIT(RTW89_FW_FEATURE_ ## _feat)))
 
+#define RTW89_CHK_FW_FEATURE_GROUP(_grp, _fw) \
+	(!!((_fw)->feature_map & GENMASK(RTW89_FW_FEATURE_ ## _grp ## _MAX, \
+					 RTW89_FW_FEATURE_ ## _grp ## _MIN)))
+
 #define RTW89_SET_FW_FEATURE(_fw_feature, _fw) \
 	((_fw)->feature_map |= BIT(_fw_feature))
 
@@ -4589,6 +4798,7 @@ struct rtw89_cam_info {
 enum rtw89_sar_sources {
 	RTW89_SAR_SOURCE_NONE,
 	RTW89_SAR_SOURCE_COMMON,
+	RTW89_SAR_SOURCE_ACPI,
 
 	RTW89_SAR_SOURCE_NR,
 };
@@ -4613,8 +4823,62 @@ struct rtw89_sar_cfg_common {
 	s32 cfg[RTW89_SAR_SUBBAND_NR];
 };
 
+enum rtw89_acpi_sar_subband {
+	RTW89_ACPI_SAR_2GHZ_SUBBAND,
+	RTW89_ACPI_SAR_5GHZ_SUBBAND_1,   /* U-NII-1 */
+	RTW89_ACPI_SAR_5GHZ_SUBBAND_2,   /* U-NII-2 */
+	RTW89_ACPI_SAR_5GHZ_SUBBAND_2E,  /* U-NII-2-Extended */
+	RTW89_ACPI_SAR_5GHZ_SUBBAND_3_4, /* U-NII-3 and U-NII-4 */
+	RTW89_ACPI_SAR_6GHZ_SUBBAND_5_L, /* U-NII-5 lower part */
+	RTW89_ACPI_SAR_6GHZ_SUBBAND_5_H, /* U-NII-5 higher part */
+	RTW89_ACPI_SAR_6GHZ_SUBBAND_6,   /* U-NII-6 */
+	RTW89_ACPI_SAR_6GHZ_SUBBAND_7_L, /* U-NII-7 lower part */
+	RTW89_ACPI_SAR_6GHZ_SUBBAND_7_H, /* U-NII-7 higher part */
+	RTW89_ACPI_SAR_6GHZ_SUBBAND_8,   /* U-NII-8 */
+
+	NUM_OF_RTW89_ACPI_SAR_SUBBAND,
+	RTW89_ACPI_SAR_SUBBAND_NR_LEGACY = RTW89_ACPI_SAR_5GHZ_SUBBAND_3_4 + 1,
+	RTW89_ACPI_SAR_SUBBAND_NR_HAS_6GHZ = RTW89_ACPI_SAR_6GHZ_SUBBAND_8 + 1,
+};
+
+#define TXPWR_FACTOR_OF_RTW89_ACPI_SAR 3 /* unit: 0.125 dBm */
+#define MAX_VAL_OF_RTW89_ACPI_SAR S16_MAX
+#define MIN_VAL_OF_RTW89_ACPI_SAR S16_MIN
+#define MAX_NUM_OF_RTW89_ACPI_SAR_TBL 6
+#define NUM_OF_RTW89_ACPI_SAR_RF_PATH (RF_PATH_B + 1)
+
+struct rtw89_sar_entry_from_acpi {
+	s16 v[NUM_OF_RTW89_ACPI_SAR_SUBBAND][NUM_OF_RTW89_ACPI_SAR_RF_PATH];
+};
+
+struct rtw89_sar_table_from_acpi {
+	/* If this table is active, must fill all fields according to either
+	 * configuration in BIOS or some default values for SAR to work well.
+	 */
+	struct rtw89_sar_entry_from_acpi entries[RTW89_REGD_NUM];
+};
+
+struct rtw89_sar_indicator_from_acpi {
+	bool enable_sync;
+	unsigned int fields;
+	u8 (*rfpath_to_antidx)(enum rtw89_rf_path rfpath);
+
+	/* Select among @tables of container, rtw89_sar_cfg_acpi, by path.
+	 * Not design with pointers since addresses will be invalid after
+	 * sync content with local container instance.
+	 */
+	u8 tblsel[NUM_OF_RTW89_ACPI_SAR_RF_PATH];
+};
+
+struct rtw89_sar_cfg_acpi {
+	u8 downgrade_2tx;
+	unsigned int valid_num;
+	struct rtw89_sar_table_from_acpi tables[MAX_NUM_OF_RTW89_ACPI_SAR_TBL];
+	struct rtw89_sar_indicator_from_acpi indicator;
+};
+
 struct rtw89_sar_info {
-	/* used to decide how to acces SAR cfg union */
+	/* used to decide how to access SAR cfg union */
 	enum rtw89_sar_sources src;
 
 	/* reserved for different knids of SAR cfg struct.
@@ -4622,6 +4886,7 @@ struct rtw89_sar_info {
 	 */
 	union {
 		struct rtw89_sar_cfg_common cfg_common;
+		struct rtw89_sar_cfg_acpi cfg_acpi;
 	};
 };
 
@@ -4651,33 +4916,49 @@ enum rtw89_ant_gain_domain_type {
 struct rtw89_ant_gain_info {
 	s8 offset[RTW89_ANT_GAIN_CHAIN_NUM][RTW89_ANT_GAIN_SUBBAND_NR];
 	u32 regd_enabled;
+	bool block_country;
 };
 
 struct rtw89_6ghz_span {
 	enum rtw89_sar_subband sar_subband_low;
 	enum rtw89_sar_subband sar_subband_high;
+	enum rtw89_acpi_sar_subband acpi_sar_subband_low;
+	enum rtw89_acpi_sar_subband acpi_sar_subband_high;
 	enum rtw89_ant_gain_subband ant_gain_subband_low;
 	enum rtw89_ant_gain_subband ant_gain_subband_high;
 };
 
 #define RTW89_SAR_SPAN_VALID(span) ((span)->sar_subband_high)
+#define RTW89_ACPI_SAR_SPAN_VALID(span) ((span)->acpi_sar_subband_high)
 #define RTW89_ANT_GAIN_SPAN_VALID(span) ((span)->ant_gain_subband_high)
 
 enum rtw89_tas_state {
 	RTW89_TAS_STATE_DPR_OFF,
 	RTW89_TAS_STATE_DPR_ON,
-	RTW89_TAS_STATE_DPR_FORBID,
+	RTW89_TAS_STATE_STATIC_SAR,
 };
 
-#define RTW89_TAS_MAX_WINDOW 50
+#define RTW89_TAS_TX_RATIO_WINDOW 6
+#define RTW89_TAS_TXPWR_WINDOW 180
 struct rtw89_tas_info {
-	s16 txpwr_history[RTW89_TAS_MAX_WINDOW];
-	s32 total_txpwr;
-	u8 cur_idx;
-	s8 dpr_gap;
-	s8 delta;
+	u16 tx_ratio_history[RTW89_TAS_TX_RATIO_WINDOW];
+	u64 txpwr_history[RTW89_TAS_TXPWR_WINDOW];
+	u8 enabled_countries;
+	u8 txpwr_head_idx;
+	u8 txpwr_tail_idx;
+	u8 tx_ratio_idx;
+	u16 total_tx_ratio;
+	u64 total_txpwr;
+	u64 instant_txpwr;
+	u32 window_size;
+	s8 dpr_on_threshold;
+	s8 dpr_off_threshold;
+	enum rtw89_tas_state backup_state;
 	enum rtw89_tas_state state;
+	bool keep_history;
+	bool block_regd;
 	bool enable;
+	bool pause;
 };
 
 struct rtw89_chanctx_cfg {
@@ -4735,6 +5016,8 @@ struct rtw89_edcca_bak {
 enum rtw89_dm_type {
 	RTW89_DM_DYNAMIC_EDCCA,
 	RTW89_DM_THERMAL_PROTECT,
+	RTW89_DM_TAS,
+	RTW89_DM_MLO,
 };
 
 #define RTW89_THERMAL_PROT_LV_MAX 5
@@ -4756,18 +5039,18 @@ struct rtw89_hal {
 	bool no_mcs_12_13;
 
 	atomic_t roc_chanctx_idx;
+	u8 roc_link_index;
 
 	DECLARE_BITMAP(changes, NUM_OF_RTW89_CHANCTX_CHANGES);
 	DECLARE_BITMAP(entity_map, NUM_OF_RTW89_CHANCTX);
 	struct rtw89_chanctx chanctx[NUM_OF_RTW89_CHANCTX];
 	struct cfg80211_chan_def roc_chandef;
 
-	bool entity_active[RTW89_PHY_MAX];
+	bool entity_active[RTW89_PHY_NUM];
 	bool entity_pause;
 	enum rtw89_entity_mode entity_mode;
 	struct rtw89_entity_mgnt entity_mgnt;
 
-	struct rtw89_edcca_bak edcca_bak;
 	u32 disabled_dm_bitmap; /* bitmap of enum rtw89_dm_type */
 
 	u8 thermal_prot_th;
@@ -4795,9 +5078,10 @@ enum rtw89_flags {
 	RTW89_FLAG_CRASH_SIMULATING,
 	RTW89_FLAG_SER_HANDLING,
 	RTW89_FLAG_WOWLAN,
-	RTW89_FLAG_FORBIDDEN_TRACK_WROK,
+	RTW89_FLAG_FORBIDDEN_TRACK_WORK,
 	RTW89_FLAG_CHANGING_INTERFACE,
 	RTW89_FLAG_HW_RFKILL_STATE,
+	RTW89_FLAG_UNPLUGGED,
 
 	NUM_OF_RTW89_FLAGS,
 };
@@ -4850,7 +5134,34 @@ struct rtw89_pkt_drop_params {
 struct rtw89_pkt_stat {
 	u16 beacon_nr;
 	u8 beacon_rate;
+	u32 beacon_len;
 	u32 rx_rate_cnt[RTW89_HW_RATE_NR];
+};
+
+#define RTW89_BCN_TRACK_STAT_NR 32
+#define RTW89_BCN_TRACK_SCALE_FACTOR 10
+#define RTW89_BCN_TRACK_MAX_BIN_NUM 6
+#define RTW89_BCN_TRACK_BIN_WIDTH 5
+#define RTW89_BCN_TRACK_TARGET_BCN 80
+
+struct rtw89_beacon_dist {
+	u16 min;
+	u16 max;
+	u16 outlier_count;
+	u16 lower_bound;
+	u16 upper_bound;
+	u16 bins[RTW89_BCN_TRACK_MAX_BIN_NUM];
+};
+
+struct rtw89_beacon_stat {
+	u8 num;
+	u8 wp;
+	u16 tbtt_tu_min;
+	u16 tbtt_tu_max;
+	u16 drift[RTW89_BCN_TRACK_STAT_NR];
+	u32 tbtt_us[RTW89_BCN_TRACK_STAT_NR];
+	u16 tbtt_tu[RTW89_BCN_TRACK_STAT_NR];
+	struct rtw89_beacon_dist bcn_dist;
 };
 
 DECLARE_EWMA(thermal, 4, 4);
@@ -4861,6 +5172,7 @@ struct rtw89_phy_stat {
 	struct ewma_rssi bcn_rssi;
 	struct rtw89_pkt_stat cur_pkt_stat;
 	struct rtw89_pkt_stat last_pkt_stat;
+	struct rtw89_beacon_stat bcn_stat;
 };
 
 enum rtw89_rfk_report_state {
@@ -4962,7 +5274,7 @@ struct rtw89_dpk_bkup_para {
 	enum rtw89_band band;
 	enum rtw89_bandwidth bw;
 	u8 ch;
-	bool path_ok;
+	u8 path_ok;
 	u8 mdpd_en;
 	u8 txagc_dpk;
 	u8 ther_dpk;
@@ -4973,7 +5285,7 @@ struct rtw89_dpk_bkup_para {
 struct rtw89_dpk_info {
 	bool is_dpk_enable;
 	bool is_dpk_reload_en;
-	u8 dpk_gs[RTW89_PHY_MAX];
+	u8 dpk_gs[RTW89_PHY_NUM];
 	u16 dc_i[RTW89_DPK_RF_PATH][RTW89_DPK_BKUP_NUM];
 	u16 dc_q[RTW89_DPK_RF_PATH][RTW89_DPK_BKUP_NUM];
 	u8 corr_val[RTW89_DPK_RF_PATH][RTW89_DPK_BKUP_NUM];
@@ -5040,8 +5352,10 @@ struct rtw89_dig_info {
 	s8 tia_gain_a[TIA_GAIN_NUM];
 	s8 tia_gain_g[TIA_GAIN_NUM];
 	s8 *tia_gain;
+	u32 bak_dig;
 	bool is_linked_pre;
 	bool bypass_dig;
+	bool pause_dig;
 };
 
 enum rtw89_multi_cfo_mode {
@@ -5135,7 +5449,7 @@ struct rtw89_tssi_info {
 	u32 alignment_backup_by_ch[RF_PATH_MAX][TSSI_MAX_CH_NUM][TSSI_ALIMK_VALUE_NUM];
 	u32 alignment_value[RF_PATH_MAX][TSSI_ALIMK_MAX][TSSI_ALIMK_VALUE_NUM];
 	bool alignment_done[RF_PATH_MAX][TSSI_ALIMK_MAX];
-	u32 tssi_alimk_time;
+	u64 tssi_alimk_time;
 };
 
 struct rtw89_power_trim_info {
@@ -5146,9 +5460,27 @@ struct rtw89_power_trim_info {
 	u8 pad_bias_trim[RF_PATH_MAX];
 };
 
+enum rtw89_regd_func {
+	RTW89_REGD_FUNC_TAS = 0, /* TAS (Time Average SAR) */
+	RTW89_REGD_FUNC_DAG = 1, /* DAG (Dynamic Antenna Gain) */
+
+	NUM_OF_RTW89_REGD_FUNC,
+};
+
 struct rtw89_regd {
 	char alpha2[3];
 	u8 txpwr_regd[RTW89_BAND_NUM];
+	DECLARE_BITMAP(func_bitmap, NUM_OF_RTW89_REGD_FUNC);
+};
+
+struct rtw89_regd_data {
+	unsigned int nr;
+	struct rtw89_regd map[] __counted_by(nr);
+};
+
+struct rtw89_regd_ctrl {
+	unsigned int nr;
+	const struct rtw89_regd *map;
 };
 
 #define RTW89_REGD_MAX_COUNTRY_NUM U8_MAX
@@ -5156,12 +5488,18 @@ struct rtw89_regd {
 #define RTW89_5GHZ_UNII4_START_INDEX 25
 
 struct rtw89_regulatory_info {
+	struct rtw89_regd_ctrl ctrl;
 	const struct rtw89_regd *regd;
+	bool programmed;
+
 	enum rtw89_reg_6ghz_power reg_6ghz_power;
 	struct rtw89_reg_6ghz_tpe reg_6ghz_tpe;
+	bool txpwr_uk_follow_etsi;
+
 	DECLARE_BITMAP(block_unii4, RTW89_REGD_MAX_COUNTRY_NUM);
 	DECLARE_BITMAP(block_6ghz, RTW89_REGD_MAX_COUNTRY_NUM);
 	DECLARE_BITMAP(block_6ghz_sp, RTW89_REGD_MAX_COUNTRY_NUM);
+	DECLARE_BITMAP(block_6ghz_vlp, RTW89_REGD_MAX_COUNTRY_NUM);
 };
 
 enum rtw89_ifs_clm_application {
@@ -5186,6 +5524,7 @@ enum rtw89_env_racing_lv {
 struct rtw89_ccx_para_info {
 	enum rtw89_env_racing_lv rac_lv;
 	u16 mntr_time;
+	bool nhm_incld_cca;
 	u8 nhm_manual_th_ofst;
 	u8 nhm_manual_th0;
 	enum rtw89_ifs_clm_application ifs_clm_app;
@@ -5219,9 +5558,13 @@ enum rtw89_ccx_edcca_opt_bw_idx {
 	RTW89_CCX_EDCCA_BW20_7 = 7
 };
 
-#define RTW89_NHM_TH_NUM 11
+struct rtw89_nhm_report {
+	struct list_head list;
+	struct ieee80211_channel *channel;
+	u8 noise;
+};
+
 #define RTW89_FAHM_TH_NUM 11
-#define RTW89_NHM_RPT_NUM 12
 #define RTW89_FAHM_RPT_NUM 12
 #define RTW89_IFS_CLM_NUM 4
 struct rtw89_env_monitor_info {
@@ -5255,6 +5598,13 @@ struct rtw89_env_monitor_info {
 	u16 ifs_clm_ofdm_fa_permil;
 	u32 ifs_clm_ifs_avg[RTW89_IFS_CLM_NUM];
 	u32 ifs_clm_cca_avg[RTW89_IFS_CLM_NUM];
+	bool nhm_include_cca;
+	u32 nhm_sum;
+	u32 nhm_mntr_time;
+	u16 nhm_result[RTW89_NHM_RPT_NUM];
+	u8 nhm_th[RTW89_NHM_RPT_NUM];
+	struct rtw89_nhm_report *nhm_his[RTW89_BAND_NUM];
+	struct list_head nhm_rpt_list;
 };
 
 enum rtw89_ser_rcvy_step {
@@ -5299,8 +5649,8 @@ struct rtw89_lps_parm {
 };
 
 struct rtw89_ppdu_sts_info {
-	struct sk_buff_head rx_queue[RTW89_PHY_MAX];
-	u8 curr_rx_ppdu_cnt[RTW89_PHY_MAX];
+	struct sk_buff_head rx_queue[RTW89_PHY_NUM];
+	u8 curr_rx_ppdu_cnt[RTW89_PHY_NUM];
 };
 
 struct rtw89_early_h2c {
@@ -5309,12 +5659,24 @@ struct rtw89_early_h2c {
 	u16 h2c_len;
 };
 
+struct rtw89_hw_scan_extra_op {
+	bool set;
+	u8 macid;
+	u8 port;
+	struct rtw89_chan chan;
+	struct rtw89_vif_link *rtwvif_link;
+};
+
 struct rtw89_hw_scan_info {
 	struct rtw89_vif_link *scanning_vif;
 	struct list_head pkt_list[NUM_NL80211_BANDS];
+	struct list_head chan_list;
 	struct rtw89_chan op_chan;
+	struct rtw89_hw_scan_extra_op extra_op;
+	bool connected;
 	bool abort;
-	u32 last_chan_idx;
+	u16 delay; /* in unit of ms */
+	u8 seq: 2;
 };
 
 enum rtw89_phy_bb_gain_band {
@@ -5419,8 +5781,8 @@ struct rtw89_phy_efuse_gain {
 	bool offset_valid;
 	bool comp_valid;
 	s8 offset[RF_PATH_MAX][RTW89_GAIN_OFFSET_NR]; /* S(8, 0) */
-	s8 offset_base[RTW89_PHY_MAX]; /* S(8, 4) */
-	s8 rssi_base[RTW89_PHY_MAX]; /* S(8, 4) */
+	s8 offset_base[RTW89_PHY_NUM]; /* S(8, 4) */
+	s8 rssi_base[RTW89_PHY_NUM]; /* S(8, 4) */
 	s8 comp[RF_PATH_MAX][RTW89_SUBBAND_NR]; /* S(8, 0) */
 };
 
@@ -5455,8 +5817,8 @@ struct rtw89_wow_gtk_info {
 	u8 kck[32];
 	u8 kek[32];
 	u8 tk1[16];
-	u8 txmickey[8];
 	u8 rxmickey[8];
+	u8 txmickey[8];
 	__le32 igtk_keyid;
 	__le64 ipn;
 	u8 igtk[2][32];
@@ -5526,28 +5888,35 @@ struct rtw89_mcc_role {
 	struct rtw89_mcc_policy policy;
 	struct rtw89_mcc_limit limit;
 
+	const struct rtw89_mcc_courtesy_cfg *crtz;
+
 	/* only valid when running with FW MRC mechanism */
 	u8 slot_idx;
 
 	/* byte-array in LE order for FW */
 	u8 macid_bitmap[BITS_TO_BYTES(RTW89_MAX_MAC_ID_NUM)];
+	u8 probe_count;
 
 	u16 duration; /* TU */
 	u16 beacon_interval; /* TU */
 	bool is_2ghz;
 	bool is_go;
 	bool is_gc;
+	bool ignore_bcn;
 };
 
 struct rtw89_mcc_bt_role {
 	u16 duration; /* TU */
 };
 
-struct rtw89_mcc_courtesy {
-	bool enable;
+struct rtw89_mcc_courtesy_cfg {
 	u8 slot_num;
-	u8 macid_src;
 	u8 macid_tgt;
+};
+
+struct rtw89_mcc_courtesy {
+	struct rtw89_mcc_courtesy_cfg ref;
+	struct rtw89_mcc_courtesy_cfg aux;
 };
 
 enum rtw89_mcc_plan {
@@ -5583,6 +5952,8 @@ struct rtw89_mcc_config {
 	struct rtw89_mcc_pattern pattern;
 	struct rtw89_mcc_sync sync;
 	u64 start_tsf;
+	u64 start_tsf_in_aux_domain;
+	u64 prepare_delay;
 	u16 mcc_interval; /* TU */
 	u16 beacon_offset; /* TU */
 };
@@ -5603,6 +5974,35 @@ struct rtw89_mcc_info {
 	struct rtw89_mcc_config config;
 };
 
+enum rtw89_mlo_mode {
+	RTW89_MLO_MODE_MLSR = 0,
+	RTW89_MLO_MODE_EMLSR = 1,
+
+	NUM_OF_RTW89_MLO_MODE,
+};
+
+struct rtw89_mlo_info {
+	struct rtw89_wait_info wait;
+};
+
+struct rtw89_beacon_track_info {
+	bool is_data_ready;
+	u32 tbtt_offset; /* in unit of microsecond */
+	u16 bcn_timeout; /* in unit of millisecond */
+
+	/* The following are constant and set at association. */
+	u8 dtim;
+	u16 beacon_int;
+	u16 low_bcn_th;
+	u16 med_bcn_th;
+	u16 high_bcn_th;
+	u16 target_bcn_th;
+	u16 outlier_low_bcn_th;
+	u16 outlier_high_bcn_th;
+	u32 close_bcn_intvl_th;
+	u32 tbtt_diff_th;
+};
+
 struct rtw89_dev {
 	struct ieee80211_hw *hw;
 	struct device *dev;
@@ -5617,7 +6017,9 @@ struct rtw89_dev {
 	const struct rtw89_pci_info *pci_info;
 	const struct rtw89_rfe_parms *rfe_parms;
 	struct rtw89_hal hal;
+	struct rtw89_beacon_track_info bcn_track;
 	struct rtw89_mcc_info mcc;
+	struct rtw89_mlo_info mlo;
 	struct rtw89_mac_info mac;
 	struct rtw89_fw_info fw;
 	struct rtw89_hci_info hci;
@@ -5629,8 +6031,6 @@ struct rtw89_dev {
 	struct rtw89_sta_link __rcu *assoc_link_on_macid[RTW89_MAX_MAC_ID_NUM];
 	refcount_t refcount_ap_info;
 
-	/* ensures exclusive access from mac80211 callbacks */
-	struct mutex mutex;
 	struct list_head rtwvifs_list;
 	/* used to protect rf read write */
 	struct mutex rf_mutex;
@@ -5647,13 +6047,18 @@ struct rtw89_dev {
 	/* used to protect rpwm */
 	spinlock_t rpwm_lock;
 
+	struct list_head tx_waits;
+	struct wiphy_delayed_work tx_wait_work;
+
+	struct rtw89_tx_rpt tx_rpt;
+
 	struct rtw89_cam_info cam_info;
 
 	struct sk_buff_head c2h_queue;
-	struct work_struct c2h_work;
-	struct work_struct ips_work;
+	struct wiphy_work c2h_work;
+	struct wiphy_work ips_work;
+	struct wiphy_work cancel_6ghz_probe_work;
 	struct work_struct load_firmware_work;
-	struct work_struct cancel_6ghz_probe_work;
 
 	struct list_head early_h2c_list;
 
@@ -5682,9 +6087,6 @@ struct rtw89_dev {
 	struct rtw89_power_trim_info pwr_trim;
 
 	struct rtw89_cfo_tracking_info cfo_tracking;
-	struct rtw89_env_monitor_info env_monitor;
-	struct rtw89_dig_info dig;
-	struct rtw89_phy_ch_info ch_info;
 	union {
 		struct rtw89_phy_bb_gain_info ax;
 		struct rtw89_phy_bb_gain_info_be be;
@@ -5693,15 +6095,24 @@ struct rtw89_dev {
 	struct rtw89_phy_ul_tb_info ul_tb_info;
 	struct rtw89_antdiv_info antdiv;
 
-	struct delayed_work track_work;
-	struct delayed_work chanctx_work;
-	struct delayed_work coex_act1_work;
-	struct delayed_work coex_bt_devinfo_work;
-	struct delayed_work coex_rfk_chk_work;
-	struct delayed_work cfo_track_work;
+	struct rtw89_bb_ctx {
+		enum rtw89_phy_idx phy_idx;
+		struct rtw89_env_monitor_info env_monitor;
+		struct rtw89_dig_info dig;
+		struct rtw89_phy_ch_info ch_info;
+		struct rtw89_edcca_bak edcca_bak;
+	} bbs[RTW89_PHY_NUM];
+
+	struct wiphy_delayed_work track_work;
+	struct wiphy_delayed_work track_ps_work;
+	struct wiphy_delayed_work chanctx_work;
+	struct wiphy_delayed_work coex_act1_work;
+	struct wiphy_delayed_work coex_bt_devinfo_work;
+	struct wiphy_delayed_work coex_rfk_chk_work;
+	struct wiphy_delayed_work cfo_track_work;
+	struct wiphy_delayed_work mcc_prepare_done_work;
 	struct delayed_work forbid_ba_work;
-	struct delayed_work roc_work;
-	struct delayed_work antdiv_work;
+	struct wiphy_delayed_work antdiv_work;
 	struct rtw89_ppdu_sts_info ppdu_sts;
 	u8 total_sta_assoc;
 	bool scanning;
@@ -5714,6 +6125,7 @@ struct rtw89_dev {
 	struct rtw89_btc btc;
 	enum rtw89_ps_mode ps_mode;
 	bool lps_enabled;
+	u8 ps_hang_cnt;
 
 	struct rtw89_wow_param wow;
 
@@ -5723,6 +6135,7 @@ struct rtw89_dev {
 	int napi_budget_countdown;
 
 	struct rtw89_debugfs *debugfs;
+	struct rtw89_vif *pure_monitor_mode_vif;
 
 	/* HCI related data, keep last */
 	u8 priv[] __aligned(sizeof(void *));
@@ -5730,6 +6143,12 @@ struct rtw89_dev {
 
 struct rtw89_link_conf_container {
 	struct ieee80211_bss_conf *link_conf[IEEE80211_MLD_MAX_NUM_LINKS];
+};
+
+struct rtw89_vif_ml_trans {
+	u16 mediate_links;
+	u16 links_to_del;
+	u16 links_to_add;
 };
 
 #define RTW89_VIF_IDLE_LINK_ID 0
@@ -5744,6 +6163,7 @@ struct rtw89_vif {
 	__be32 ip_addr;
 
 	struct rtw89_traffic_stats stats;
+	struct rtw89_traffic_stats stats_ps;
 	u32 tdls_peer;
 
 	struct ieee80211_scan_ies *scan_ies;
@@ -5752,6 +6172,10 @@ struct rtw89_vif {
 	struct rtw89_roc roc;
 	bool offchan;
 
+	enum rtw89_mlo_mode mlo_mode;
+	struct rtw89_vif_ml_trans ml_trans;
+
+	struct list_head dlink_pool;
 	u8 links_inst_valid_num;
 	DECLARE_BITMAP(links_inst_map, __RTW89_MLD_MAX_LINK_NUM);
 	struct rtw89_vif_link *links[IEEE80211_MLD_MAX_NUM_LINKS];
@@ -5791,6 +6215,7 @@ struct rtw89_sta {
 
 	DECLARE_BITMAP(pairwise_sec_cam_map, RTW89_MAX_SEC_CAM_NUM);
 
+	struct list_head dlink_pool;
 	u8 links_inst_valid_num;
 	DECLARE_BITMAP(links_inst_map, __RTW89_MLD_MAX_LINK_NUM);
 	struct rtw89_sta_link *links[IEEE80211_MLD_MAX_NUM_LINKS];
@@ -5886,6 +6311,32 @@ rtw89_assoc_link_rcu_dereference(struct rtw89_dev *rtwdev, u8 macid)
 	return rcu_dereference(rtwdev->assoc_link_on_macid[macid]);
 }
 
+#define rtw89_get_designated_link(links_holder) \
+({ \
+	typeof(links_holder) p = links_holder; \
+	list_first_entry_or_null(&p->dlink_pool, typeof(*p->links_inst), dlink_schd); \
+})
+
+static inline void rtw89_tx_wait_release(struct rtw89_tx_wait_info *wait)
+{
+	dev_kfree_skb_any(wait->skb);
+	kfree_rcu(wait, rcu_head);
+}
+
+static inline void rtw89_tx_wait_list_clear(struct rtw89_dev *rtwdev)
+{
+	struct rtw89_tx_wait_info *wait, *tmp;
+
+	lockdep_assert_wiphy(rtwdev->hw->wiphy);
+
+	list_for_each_entry_safe(wait, tmp, &rtwdev->tx_waits, list) {
+		if (!completion_done(&wait->completion))
+			continue;
+		list_del(&wait->list);
+		rtw89_tx_wait_release(wait);
+	}
+}
+
 static inline int rtw89_hci_tx_write(struct rtw89_dev *rtwdev,
 				     struct rtw89_core_tx_request *tx_req)
 {
@@ -5895,6 +6346,8 @@ static inline int rtw89_hci_tx_write(struct rtw89_dev *rtwdev,
 static inline void rtw89_hci_reset(struct rtw89_dev *rtwdev)
 {
 	rtwdev->hci.ops->reset(rtwdev);
+	/* hci.ops->reset must complete all pending TX wait SKBs */
+	rtw89_tx_wait_list_clear(rtwdev);
 }
 
 static inline int rtw89_hci_start(struct rtw89_dev *rtwdev)
@@ -6027,9 +6480,13 @@ static inline void rtw89_hci_clear(struct rtw89_dev *rtwdev, struct pci_dev *pde
 static inline
 struct rtw89_tx_skb_data *RTW89_TX_SKB_CB(struct sk_buff *skb)
 {
+	/*
+	 * This should be used by/after rtw89_hci_tx_write() and before doing
+	 * ieee80211_tx_info_clear_status().
+	 */
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 
-	return (struct rtw89_tx_skb_data *)info->status.status_driver_data;
+	return (struct rtw89_tx_skb_data *)info->driver_data;
 }
 
 static inline u8 rtw89_read8(struct rtw89_dev *rtwdev, u32 addr)
@@ -6217,6 +6674,15 @@ rtw89_write_rf(struct rtw89_dev *rtwdev, enum rtw89_rf_path rf_path,
 	mutex_lock(&rtwdev->rf_mutex);
 	rtwdev->chip->ops->write_rf(rtwdev, rf_path, addr, mask, data);
 	mutex_unlock(&rtwdev->rf_mutex);
+}
+
+static inline u32 rtw89_read32_pci_cfg(struct rtw89_dev *rtwdev, u32 addr)
+{
+	if (rtwdev->hci.type != RTW89_HCI_TYPE_PCIE ||
+	    !rtwdev->hci.ops->read32_pci_cfg)
+		return RTW89_R32_EA;
+
+	return rtwdev->hci.ops->read32_pci_cfg(rtwdev, addr);
 }
 
 static inline struct ieee80211_txq *rtw89_txq_to_txq(struct rtw89_txq *rtwtxq)
@@ -6583,12 +7049,17 @@ static inline void rtw89_chip_rfk_hw_init(struct rtw89_dev *rtwdev)
 }
 
 static inline
-void rtw89_chip_bb_preinit(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx)
+void rtw89_chip_bb_preinit(struct rtw89_dev *rtwdev)
 {
 	const struct rtw89_chip_info *chip = rtwdev->chip;
 
-	if (chip->ops->bb_preinit)
-		chip->ops->bb_preinit(rtwdev, phy_idx);
+	if (!chip->ops->bb_preinit)
+		return;
+
+	chip->ops->bb_preinit(rtwdev, RTW89_PHY_0);
+
+	if (rtwdev->dbcc_en)
+		chip->ops->bb_preinit(rtwdev, RTW89_PHY_1);
 }
 
 static inline
@@ -6712,6 +7183,17 @@ static inline u8 rtw89_chip_get_thermal(struct rtw89_dev *rtwdev,
 	return chip->ops->get_thermal(rtwdev, rf_path);
 }
 
+static inline u32 rtw89_chip_chan_to_rf18_val(struct rtw89_dev *rtwdev,
+					      const struct rtw89_chan *chan)
+{
+	const struct rtw89_chip_info *chip = rtwdev->chip;
+
+	if (!chip->ops->chan_to_rf18_val)
+		return 0;
+
+	return chip->ops->chan_to_rf18_val(rtwdev, chan);
+}
+
 static inline void rtw89_chip_query_ppdu(struct rtw89_dev *rtwdev,
 					 struct rtw89_rx_phy_ppdu *phy_ppdu,
 					 struct ieee80211_rx_status *status)
@@ -6775,9 +7257,14 @@ static inline void rtw89_load_txpwr_table(struct rtw89_dev *rtwdev,
 
 static inline u8 rtw89_regd_get(struct rtw89_dev *rtwdev, u8 band)
 {
-	const struct rtw89_regd *regd = rtwdev->regulatory.regd;
+	const struct rtw89_regulatory_info *regulatory = &rtwdev->regulatory;
+	const struct rtw89_regd *regd = regulatory->regd;
+	u8 txpwr_regd = regd->txpwr_regd[band];
 
-	return regd->txpwr_regd[band];
+	if (regulatory->txpwr_uk_follow_etsi && txpwr_regd == RTW89_UK)
+		return RTW89_ETSI;
+
+	return txpwr_regd;
 }
 
 static inline void rtw89_ctrl_btg_bt_rx(struct rtw89_dev *rtwdev, bool en,
@@ -6817,6 +7304,14 @@ void rtw89_chip_fill_txdesc_fwcmd(struct rtw89_dev *rtwdev,
 	const struct rtw89_chip_info *chip = rtwdev->chip;
 
 	chip->ops->fill_txdesc_fwcmd(rtwdev, desc_info, txdesc);
+}
+
+static inline
+u8 rtw89_chip_get_ch_dma(struct rtw89_dev *rtwdev, u8 qsel)
+{
+	const struct rtw89_chip_info *chip = rtwdev->chip;
+
+	return chip->ops->get_ch_dma[rtwdev->hci.type](rtwdev, qsel);
 }
 
 static inline
@@ -6947,23 +7442,28 @@ static inline struct sk_buff *rtw89_alloc_skb_for_rx(struct rtw89_dev *rtwdev,
 	return dev_alloc_skb(length);
 }
 
-static inline void rtw89_core_tx_wait_complete(struct rtw89_dev *rtwdev,
+static inline bool rtw89_core_is_tx_wait(struct rtw89_dev *rtwdev,
+					 struct rtw89_tx_skb_data *skb_data)
+{
+	return rcu_access_pointer(skb_data->wait);
+}
+
+static inline bool rtw89_core_tx_wait_complete(struct rtw89_dev *rtwdev,
 					       struct rtw89_tx_skb_data *skb_data,
-					       bool tx_done)
+					       u8 tx_status)
 {
 	struct rtw89_tx_wait_info *wait;
 
-	rcu_read_lock();
+	guard(rcu)();
 
 	wait = rcu_dereference(skb_data->wait);
 	if (!wait)
-		goto out;
+		return false;
 
-	wait->tx_done = tx_done;
-	complete(&wait->completion);
-
-out:
-	rcu_read_unlock();
+	wait->tx_done = tx_status == RTW89_TX_DONE;
+	/* Don't access skb anymore after completion */
+	complete_all(&wait->completion);
+	return true;
 }
 
 static inline bool rtw89_is_mlo_1_1(struct rtw89_dev *rtwdev)
@@ -6978,6 +7478,48 @@ static inline bool rtw89_is_mlo_1_1(struct rtw89_dev *rtwdev)
 	}
 }
 
+static inline u8 rtw89_get_active_phy_bitmap(struct rtw89_dev *rtwdev)
+{
+	if (!rtwdev->dbcc_en)
+		return BIT(RTW89_PHY_0);
+
+	switch (rtwdev->mlo_dbcc_mode) {
+	case MLO_0_PLUS_2_1RF:
+	case MLO_0_PLUS_2_2RF:
+		return BIT(RTW89_PHY_1);
+	case MLO_1_PLUS_1_1RF:
+	case MLO_1_PLUS_1_2RF:
+	case MLO_2_PLUS_2_2RF:
+	case DBCC_LEGACY:
+		return BIT(RTW89_PHY_0) | BIT(RTW89_PHY_1);
+	case MLO_2_PLUS_0_1RF:
+	case MLO_2_PLUS_0_2RF:
+	default:
+		return BIT(RTW89_PHY_0);
+	}
+}
+
+#define rtw89_for_each_active_bb(rtwdev, bb) \
+	for (u8 __active_bb_bitmap = rtw89_get_active_phy_bitmap(rtwdev), \
+	     __phy_idx = 0; __phy_idx < RTW89_PHY_NUM; __phy_idx++) \
+		if (__active_bb_bitmap & BIT(__phy_idx) && \
+		    (bb = &rtwdev->bbs[__phy_idx]))
+
+#define rtw89_for_each_capab_bb(rtwdev, bb) \
+	for (u8 __phy_idx_max = rtwdev->dbcc_en ? RTW89_PHY_1 : RTW89_PHY_0, \
+	     __phy_idx = 0; __phy_idx <= __phy_idx_max; __phy_idx++) \
+		if ((bb = &rtwdev->bbs[__phy_idx]))
+
+static inline
+struct rtw89_bb_ctx *rtw89_get_bb_ctx(struct rtw89_dev *rtwdev,
+				      enum rtw89_phy_idx phy_idx)
+{
+	if (phy_idx >= RTW89_PHY_NUM)
+		return &rtwdev->bbs[RTW89_PHY_0];
+
+	return &rtwdev->bbs[phy_idx];
+}
+
 static inline bool rtw89_is_rtl885xb(struct rtw89_dev *rtwdev)
 {
 	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
@@ -6988,13 +7530,25 @@ static inline bool rtw89_is_rtl885xb(struct rtw89_dev *rtwdev)
 	return false;
 }
 
+static inline u32 rtw89_bytes_to_mbps(u64 bytes, enum rtw89_tfc_interval interval)
+{
+	switch (interval) {
+	default:
+	case RTW89_TFC_INTERVAL_2SEC:
+		return bytes >> 18; /* bytes/2s --> Mbps */;
+	case RTW89_TFC_INTERVAL_100MS:
+		return (bytes * 10) >> 17; /* bytes/100ms --> Mbps */
+	}
+}
+
 int rtw89_core_tx_write(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif,
 			struct ieee80211_sta *sta, struct sk_buff *skb, int *qsel);
 int rtw89_h2c_tx(struct rtw89_dev *rtwdev,
 		 struct sk_buff *skb, bool fwdl);
 void rtw89_core_tx_kick_off(struct rtw89_dev *rtwdev, u8 qsel);
 int rtw89_core_tx_kick_off_and_wait(struct rtw89_dev *rtwdev, struct sk_buff *skb,
-				    int qsel, unsigned int timeout);
+				    struct rtw89_tx_wait_info *wait, int qsel,
+				    unsigned int timeout);
 void rtw89_core_fill_txdesc(struct rtw89_dev *rtwdev,
 			    struct rtw89_tx_desc_info *desc_info,
 			    void *txdesc);
@@ -7010,6 +7564,9 @@ void rtw89_core_fill_txdesc_fwcmd_v1(struct rtw89_dev *rtwdev,
 void rtw89_core_fill_txdesc_fwcmd_v2(struct rtw89_dev *rtwdev,
 				     struct rtw89_tx_desc_info *desc_info,
 				     void *txdesc);
+u8 rtw89_core_get_ch_dma(struct rtw89_dev *rtwdev, u8 qsel);
+u8 rtw89_core_get_ch_dma_v1(struct rtw89_dev *rtwdev, u8 qsel);
+u8 rtw89_core_get_ch_dma_v2(struct rtw89_dev *rtwdev, u8 qsel);
 void rtw89_core_rx(struct rtw89_dev *rtwdev,
 		   struct rtw89_rx_desc_info *desc_info,
 		   struct sk_buff *skb);
@@ -7090,20 +7647,27 @@ void rtw89_vif_type_mapping(struct rtw89_vif_link *rtwvif_link, bool assoc);
 int rtw89_chip_info_setup(struct rtw89_dev *rtwdev);
 void rtw89_chip_cfg_txpwr_ul_tb_offset(struct rtw89_dev *rtwdev,
 				       struct rtw89_vif_link *rtwvif_link);
-bool rtw89_ra_report_to_bitrate(struct rtw89_dev *rtwdev, u8 rpt_rate, u16 *bitrate);
+bool rtw89_legacy_rate_to_bitrate(struct rtw89_dev *rtwdev, u8 legacy_rate, u16 *bitrate);
 int rtw89_regd_setup(struct rtw89_dev *rtwdev);
-int rtw89_regd_init(struct rtw89_dev *rtwdev,
-		    void (*reg_notifier)(struct wiphy *wiphy, struct regulatory_request *request));
-void rtw89_regd_notifier(struct wiphy *wiphy, struct regulatory_request *request);
+int rtw89_regd_init_hint(struct rtw89_dev *rtwdev);
+const char *rtw89_regd_get_string(enum rtw89_regulation_type regd);
 void rtw89_traffic_stats_init(struct rtw89_dev *rtwdev,
 			      struct rtw89_traffic_stats *stats);
-int rtw89_wait_for_cond(struct rtw89_wait_info *wait, unsigned int cond);
+struct rtw89_wait_response *
+rtw89_wait_for_cond_prep(struct rtw89_wait_info *wait, unsigned int cond)
+__acquires(rtw89_wait);
+int rtw89_wait_for_cond_eval(struct rtw89_wait_info *wait,
+			     struct rtw89_wait_response *prep, int err)
+__releases(rtw89_wait);
 void rtw89_complete_cond(struct rtw89_wait_info *wait, unsigned int cond,
 			 const struct rtw89_completion_data *data);
 int rtw89_core_start(struct rtw89_dev *rtwdev);
 void rtw89_core_stop(struct rtw89_dev *rtwdev);
-void rtw89_core_update_beacon_work(struct work_struct *work);
-void rtw89_roc_work(struct work_struct *work);
+void rtw89_core_update_beacon_work(struct wiphy *wiphy, struct wiphy_work *work);
+void rtw89_core_csa_beacon_work(struct wiphy *wiphy, struct wiphy_work *work);
+int rtw89_core_send_nullfunc(struct rtw89_dev *rtwdev, struct rtw89_vif_link *rtwvif_link,
+			     bool qos, bool ps, int timeout);
+void rtw89_roc_work(struct wiphy *wiphy, struct wiphy_work *work);
 void rtw89_roc_start(struct rtw89_dev *rtwdev, struct rtw89_vif *rtwvif);
 void rtw89_roc_end(struct rtw89_dev *rtwdev, struct rtw89_vif *rtwvif);
 void rtw89_core_scan_start(struct rtw89_dev *rtwdev, struct rtw89_vif_link *rtwvif_link,
@@ -7116,5 +7680,7 @@ void rtw89_core_update_p2p_ps(struct rtw89_dev *rtwdev,
 			      struct rtw89_vif_link *rtwvif_link,
 			      struct ieee80211_bss_conf *bss_conf);
 void rtw89_core_ntfy_btc_event(struct rtw89_dev *rtwdev, enum rtw89_btc_hmsg event);
+int rtw89_core_mlsr_switch(struct rtw89_dev *rtwdev, struct rtw89_vif *rtwvif,
+			   unsigned int link_id);
 
 #endif

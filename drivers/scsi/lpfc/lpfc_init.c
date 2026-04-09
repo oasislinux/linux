@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2024 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2025 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.  *
  * Copyright (C) 2004-2016 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -595,7 +595,7 @@ lpfc_config_port_post(struct lpfc_hba *phba)
 	/* Set up ring-0 (ELS) timer */
 	timeout = phba->fc_ratov * 2;
 	mod_timer(&vport->els_tmofunc,
-		  jiffies + msecs_to_jiffies(1000 * timeout));
+		  jiffies + secs_to_jiffies(timeout));
 	/* Set up heart beat (HB) timer */
 	mod_timer(&phba->hb_tmofunc,
 		  jiffies + secs_to_jiffies(LPFC_HB_MBOX_INTERVAL));
@@ -604,7 +604,7 @@ lpfc_config_port_post(struct lpfc_hba *phba)
 	phba->last_completion_time = jiffies;
 	/* Set up error attention (ERATT) polling timer */
 	mod_timer(&phba->eratt_poll,
-		  jiffies + msecs_to_jiffies(1000 * phba->eratt_poll_interval));
+		  jiffies + secs_to_jiffies(phba->eratt_poll_interval));
 
 	if (test_bit(LINK_DISABLED, &phba->hba_flag)) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_TRACE_EVENT,
@@ -1196,7 +1196,7 @@ lpfc_hb_timeout(struct timer_list *t)
 	uint32_t tmo_posted;
 	unsigned long iflag;
 
-	phba = from_timer(phba, t, hb_tmofunc);
+	phba = timer_container_of(phba, t, hb_tmofunc);
 
 	/* Check for heart beat timeout conditions */
 	spin_lock_irqsave(&phba->pport->work_port_lock, iflag);
@@ -1228,7 +1228,7 @@ lpfc_rrq_timeout(struct timer_list *t)
 {
 	struct lpfc_hba *phba;
 
-	phba = from_timer(phba, t, rrq_tmr);
+	phba = timer_container_of(phba, t, rrq_tmr);
 	if (test_bit(FC_UNLOADING, &phba->pport->load_flag)) {
 		clear_bit(HBA_RRQ_ACTIVE, &phba->hba_flag);
 		return;
@@ -1906,6 +1906,9 @@ lpfc_sli4_port_sta_fn_reset(struct lpfc_hba *phba, int mbx_action,
 	int rc;
 	uint32_t intr_mode;
 	LPFC_MBOXQ_t *mboxq;
+
+	/* Notifying the transport that the targets are going offline. */
+	lpfc_scsi_dev_block(phba);
 
 	if (bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) >=
 	    LPFC_SLI_INTF_IF_TYPE_2) {
@@ -2624,27 +2627,33 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_BMID:
-		m = (typeof(m)){"LP1150", "PCI-X2", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LP1150", "PCI-X2",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_BSMB:
 		m = (typeof(m)){"LP111", "PCI-X2",
 				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_ZEPHYR:
-		m = (typeof(m)){"LPe11000", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe11000", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_ZEPHYR_SCSP:
-		m = (typeof(m)){"LPe11000", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe11000", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_ZEPHYR_DCSP:
-		m = (typeof(m)){"LP2105", "PCIe", "FCoE Adapter"};
+		m = (typeof(m)){"LP2105", "PCIe",
+				"Obsolete, Unsupported FCoE Adapter"};
 		GE = 1;
 		break;
 	case PCI_DEVICE_ID_ZMID:
-		m = (typeof(m)){"LPe1150", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe1150", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_ZSMB:
-		m = (typeof(m)){"LPe111", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe111", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_LP101:
 		m = (typeof(m)){"LP101", "PCI-X",
@@ -2663,22 +2672,28 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_SAT:
-		m = (typeof(m)){"LPe12000", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe12000", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_SAT_MID:
-		m = (typeof(m)){"LPe1250", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe1250", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_SAT_SMB:
-		m = (typeof(m)){"LPe121", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe121", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_SAT_DCSP:
-		m = (typeof(m)){"LPe12002-SP", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe12002-SP", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_SAT_SCSP:
-		m = (typeof(m)){"LPe12000-SP", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe12000-SP", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_SAT_S:
-		m = (typeof(m)){"LPe12000-S", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe12000-S", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_PROTEUS_VF:
 		m = (typeof(m)){"LPev12000", "PCIe IOV",
@@ -2694,22 +2709,25 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 		break;
 	case PCI_DEVICE_ID_TIGERSHARK:
 		oneConnect = 1;
-		m = (typeof(m)){"OCe10100", "PCIe", "FCoE"};
+		m = (typeof(m)){"OCe10100", "PCIe",
+				"Obsolete, Unsupported FCoE Adapter"};
 		break;
 	case PCI_DEVICE_ID_TOMCAT:
 		oneConnect = 1;
-		m = (typeof(m)){"OCe11100", "PCIe", "FCoE"};
+		m = (typeof(m)){"OCe11100", "PCIe",
+				"Obsolete, Unsupported FCoE Adapter"};
 		break;
 	case PCI_DEVICE_ID_FALCON:
 		m = (typeof(m)){"LPSe12002-ML1-E", "PCIe",
-				"EmulexSecure Fibre"};
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_BALIUS:
 		m = (typeof(m)){"LPVe12002", "PCIe Shared I/O",
 				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_LANCER_FC:
-		m = (typeof(m)){"LPe16000", "PCIe", "Fibre Channel Adapter"};
+		m = (typeof(m)){"LPe16000", "PCIe",
+				"Obsolete, Unsupported Fibre Channel Adapter"};
 		break;
 	case PCI_DEVICE_ID_LANCER_FC_VF:
 		m = (typeof(m)){"LPe16000", "PCIe",
@@ -2717,12 +2735,13 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 		break;
 	case PCI_DEVICE_ID_LANCER_FCOE:
 		oneConnect = 1;
-		m = (typeof(m)){"OCe15100", "PCIe", "FCoE"};
+		m = (typeof(m)){"OCe15100", "PCIe",
+				"Obsolete, Unsupported FCoE Adapter"};
 		break;
 	case PCI_DEVICE_ID_LANCER_FCOE_VF:
 		oneConnect = 1;
 		m = (typeof(m)){"OCe15100", "PCIe",
-				"Obsolete, Unsupported FCoE"};
+				"Obsolete, Unsupported FCoE Adapter"};
 		break;
 	case PCI_DEVICE_ID_LANCER_G6_FC:
 		m = (typeof(m)){"LPe32000", "PCIe", "Fibre Channel Adapter"};
@@ -2736,7 +2755,8 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 	case PCI_DEVICE_ID_SKYHAWK:
 	case PCI_DEVICE_ID_SKYHAWK_VF:
 		oneConnect = 1;
-		m = (typeof(m)){"OCe14000", "PCIe", "FCoE"};
+		m = (typeof(m)){"OCe14000", "PCIe",
+				"Obsolete, Unsupported FCoE Adapter"};
 		break;
 	default:
 		m = (typeof(m)){"Unknown", "", ""};
@@ -3037,19 +3057,6 @@ lpfc_cleanup(struct lpfc_vport *vport)
 		lpfc_vmid_vport_cleanup(vport);
 
 	list_for_each_entry_safe(ndlp, next_ndlp, &vport->fc_nodes, nlp_listp) {
-		if (vport->port_type != LPFC_PHYSICAL_PORT &&
-		    ndlp->nlp_DID == Fabric_DID) {
-			/* Just free up ndlp with Fabric_DID for vports */
-			lpfc_nlp_put(ndlp);
-			continue;
-		}
-
-		if (ndlp->nlp_DID == Fabric_Cntl_DID &&
-		    ndlp->nlp_state == NLP_STE_UNUSED_NODE) {
-			lpfc_nlp_put(ndlp);
-			continue;
-		}
-
 		/* Fabric Ports not in UNMAPPED state are cleaned up in the
 		 * DEVICE_RM event.
 		 */
@@ -3120,8 +3127,8 @@ lpfc_cleanup(struct lpfc_vport *vport)
 void
 lpfc_stop_vport_timers(struct lpfc_vport *vport)
 {
-	del_timer_sync(&vport->els_tmofunc);
-	del_timer_sync(&vport->delayed_disc_tmo);
+	timer_delete_sync(&vport->els_tmofunc);
+	timer_delete_sync(&vport->delayed_disc_tmo);
 	lpfc_can_disctmo(vport);
 	return;
 }
@@ -3140,7 +3147,7 @@ __lpfc_sli4_stop_fcf_redisc_wait_timer(struct lpfc_hba *phba)
 	phba->fcf.fcf_flag &= ~FCF_REDISC_PEND;
 
 	/* Now, try to stop the timer */
-	del_timer(&phba->fcf.redisc_wait);
+	timer_delete(&phba->fcf.redisc_wait);
 }
 
 /**
@@ -3302,12 +3309,12 @@ lpfc_stop_hba_timers(struct lpfc_hba *phba)
 		lpfc_stop_vport_timers(phba->pport);
 	cancel_delayed_work_sync(&phba->eq_delay_work);
 	cancel_delayed_work_sync(&phba->idle_stat_delay_work);
-	del_timer_sync(&phba->sli.mbox_tmo);
-	del_timer_sync(&phba->fabric_block_timer);
-	del_timer_sync(&phba->eratt_poll);
-	del_timer_sync(&phba->hb_tmofunc);
+	timer_delete_sync(&phba->sli.mbox_tmo);
+	timer_delete_sync(&phba->fabric_block_timer);
+	timer_delete_sync(&phba->eratt_poll);
+	timer_delete_sync(&phba->hb_tmofunc);
 	if (phba->sli_rev == LPFC_SLI_REV4) {
-		del_timer_sync(&phba->rrq_tmr);
+		timer_delete_sync(&phba->rrq_tmr);
 		clear_bit(HBA_RRQ_ACTIVE, &phba->hba_flag);
 	}
 	clear_bit(HBA_HBEAT_INP, &phba->hba_flag);
@@ -3316,7 +3323,7 @@ lpfc_stop_hba_timers(struct lpfc_hba *phba)
 	switch (phba->pci_dev_grp) {
 	case LPFC_PCI_DEV_LP:
 		/* Stop any LightPulse device specific driver timers */
-		del_timer_sync(&phba->fcp_poll_timer);
+		timer_delete_sync(&phba->fcp_poll_timer);
 		break;
 	case LPFC_PCI_DEV_OC:
 		/* Stop any OneConnect device specific driver timers */
@@ -3361,8 +3368,8 @@ lpfc_block_mgmt_io(struct lpfc_hba *phba, int mbx_action)
 		/* Determine how long we might wait for the active mailbox
 		 * command to be gracefully completed by firmware.
 		 */
-		timeout = msecs_to_jiffies(lpfc_mbox_tmo_val(phba,
-				phba->sli.mbox_active) * 1000) + jiffies;
+		timeout = secs_to_jiffies(lpfc_mbox_tmo_val(phba,
+				phba->sli.mbox_active)) + jiffies;
 	}
 	spin_unlock_irqrestore(&phba->hbalock, iflag);
 
@@ -5128,7 +5135,7 @@ lpfc_fcf_redisc_wait_start_timer(struct lpfc_hba *phba)
 static void
 lpfc_sli4_fcf_redisc_wait_tmo(struct timer_list *t)
 {
-	struct lpfc_hba *phba = from_timer(phba, t, fcf.redisc_wait);
+	struct lpfc_hba *phba = timer_container_of(phba, t, fcf.redisc_wait);
 
 	/* Don't send FCF rediscovery event if timer cancelled */
 	spin_lock_irq(&phba->hbalock);
@@ -5159,7 +5166,8 @@ lpfc_sli4_fcf_redisc_wait_tmo(struct timer_list *t)
 static void
 lpfc_vmid_poll(struct timer_list *t)
 {
-	struct lpfc_hba *phba = from_timer(phba, t, inactive_vmid_poll);
+	struct lpfc_hba *phba = timer_container_of(phba, t,
+						   inactive_vmid_poll);
 	u32 wake_up = 0;
 
 	/* check if there is a need to issue QFPA */
@@ -6909,7 +6917,7 @@ lpfc_sli4_async_fip_evt(struct lpfc_hba *phba,
 			 * re-instantiate the Vlink using FDISC.
 			 */
 			mod_timer(&ndlp->nlp_delayfunc,
-				  jiffies + msecs_to_jiffies(1000));
+				  jiffies + secs_to_jiffies(1));
 			set_bit(NLP_DELAY_TMO, &ndlp->nlp_flag);
 			ndlp->nlp_last_elscmd = ELS_CMD_FDISC;
 			vport->port_state = LPFC_FDISC;
@@ -7915,8 +7923,6 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	int longs;
 	int extra;
 	uint64_t wwn;
-	u32 if_type;
-	u32 if_fam;
 
 	phba->sli4_hba.num_present_cpu = lpfc_present_cpu;
 	phba->sli4_hba.num_possible_cpu = cpumask_last(cpu_possible_mask) + 1;
@@ -7938,7 +7944,7 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	/* Allocate all driver workqueues here */
 
 	/* The lpfc_wq workqueue for deferred irq use */
-	phba->wq = alloc_workqueue("lpfc_wq", WQ_MEM_RECLAIM, 0);
+	phba->wq = alloc_workqueue("lpfc_wq", WQ_MEM_RECLAIM | WQ_PERCPU, 0);
 	if (!phba->wq)
 		return -ENOMEM;
 
@@ -7952,11 +7958,10 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	timer_setup(&phba->fcf.redisc_wait, lpfc_sli4_fcf_redisc_wait_tmo, 0);
 
 	/* CMF congestion timer */
-	hrtimer_init(&phba->cmf_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	phba->cmf_timer.function = lpfc_cmf_timer;
+	hrtimer_setup(&phba->cmf_timer, lpfc_cmf_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	/* CMF 1 minute stats collection timer */
-	hrtimer_init(&phba->cmf_stats_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	phba->cmf_stats_timer.function = lpfc_cmf_stats_timer;
+	hrtimer_setup(&phba->cmf_stats_timer, lpfc_cmf_stats_timer, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 
 	/*
 	 * Control structure for handling external multi-buffer mailbox
@@ -8177,28 +8182,11 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	 */
 	rc = lpfc_get_sli4_parameters(phba, mboxq);
 	if (rc) {
-		if_type = bf_get(lpfc_sli_intf_if_type,
-				 &phba->sli4_hba.sli_intf);
-		if_fam = bf_get(lpfc_sli_intf_sli_family,
-				&phba->sli4_hba.sli_intf);
-		if (phba->sli4_hba.extents_in_use &&
-		    phba->sli4_hba.rpi_hdrs_in_use) {
-			lpfc_printf_log(phba, KERN_ERR, LOG_TRACE_EVENT,
-					"2999 Unsupported SLI4 Parameters "
-					"Extents and RPI headers enabled.\n");
-			if (if_type == LPFC_SLI_INTF_IF_TYPE_0 &&
-			    if_fam ==  LPFC_SLI_INTF_FAMILY_BE2) {
-				mempool_free(mboxq, phba->mbox_mem_pool);
-				rc = -EIO;
-				goto out_free_bsmbx;
-			}
-		}
-		if (!(if_type == LPFC_SLI_INTF_IF_TYPE_0 &&
-		      if_fam == LPFC_SLI_INTF_FAMILY_BE2)) {
-			mempool_free(mboxq, phba->mbox_mem_pool);
-			rc = -EIO;
-			goto out_free_bsmbx;
-		}
+		lpfc_log_msg(phba, KERN_WARNING, LOG_INIT,
+			     "2999 Could not get SLI4 parameters\n");
+		rc = -EIO;
+		mempool_free(mboxq, phba->mbox_mem_pool);
+		goto out_free_bsmbx;
 	}
 
 	/*
@@ -8299,10 +8287,7 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 			phba->cfg_total_seg_cnt,  phba->cfg_scsi_seg_cnt,
 			phba->cfg_nvme_seg_cnt);
 
-	if (phba->cfg_sg_dma_buf_size < SLI4_PAGE_SIZE)
-		i = phba->cfg_sg_dma_buf_size;
-	else
-		i = SLI4_PAGE_SIZE;
+	i = min(phba->cfg_sg_dma_buf_size, SLI4_PAGE_SIZE);
 
 	phba->lpfc_sg_dma_buf_pool =
 			dma_pool_create("lpfc_sg_dma_buf_pool",
@@ -9091,9 +9076,9 @@ lpfc_setup_fdmi_mask(struct lpfc_vport *vport)
 			vport->fdmi_port_mask = LPFC_FDMI2_PORT_ATTR;
 	}
 
-	lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY,
-			"6077 Setup FDMI mask: hba x%x port x%x\n",
-			vport->fdmi_hba_mask, vport->fdmi_port_mask);
+	lpfc_printf_vlog(vport, KERN_INFO, LOG_DISCOVERY,
+			 "6077 Setup FDMI mask: hba x%x port x%x\n",
+			 vport->fdmi_hba_mask, vport->fdmi_port_mask);
 }
 
 /**
@@ -12762,7 +12747,7 @@ static void __lpfc_cpuhp_remove(struct lpfc_hba *phba)
 	 * timer. Wait for the poll timer to retire.
 	 */
 	synchronize_rcu();
-	del_timer_sync(&phba->cpuhp_poll_timer);
+	timer_delete_sync(&phba->cpuhp_poll_timer);
 }
 
 static void lpfc_cpuhp_remove(struct lpfc_hba *phba)
@@ -12873,7 +12858,7 @@ lpfc_irq_rebalance(struct lpfc_hba *phba, unsigned int cpu, bool offline)
 
 	if (offline) {
 		/* Find next online CPU on original mask */
-		cpu_next = cpumask_next_wrap(cpu, orig_mask, cpu, true);
+		cpu_next = cpumask_next_wrap(cpu, orig_mask);
 		cpu_select = lpfc_next_online_cpu(orig_mask, cpu_next);
 
 		/* Found a valid CPU */
@@ -13170,6 +13155,7 @@ lpfc_sli4_enable_msi(struct lpfc_hba *phba)
 	eqhdl = lpfc_get_eq_hdl(0);
 	rc = pci_irq_vector(phba->pcidev, 0);
 	if (rc < 0) {
+		free_irq(phba->pcidev->irq, phba);
 		pci_free_irq_vectors(phba->pcidev);
 		lpfc_printf_log(phba, KERN_WARNING, LOG_INIT,
 				"0496 MSI pci_irq_vec failed (%d)\n", rc);
@@ -13250,6 +13236,7 @@ lpfc_sli4_enable_intr(struct lpfc_hba *phba, uint32_t cfg_mode)
 			eqhdl = lpfc_get_eq_hdl(0);
 			retval = pci_irq_vector(phba->pcidev, 0);
 			if (retval < 0) {
+				free_irq(phba->pcidev->irq, phba);
 				lpfc_printf_log(phba, KERN_WARNING, LOG_INIT,
 					"0502 INTR pci_irq_vec failed (%d)\n",
 					 retval);
@@ -14374,7 +14361,7 @@ lpfc_sli_prep_dev_for_perm_failure(struct lpfc_hba *phba)
  * as desired.
  *
  * Return codes
- * 	PCI_ERS_RESULT_CAN_RECOVER - can be recovered with reset_link
+ *	PCI_ERS_RESULT_CAN_RECOVER - can be recovered without reset
  * 	PCI_ERS_RESULT_NEED_RESET - need to reset before recovery
  * 	PCI_ERS_RESULT_DISCONNECT - device could not be recovered
  **/
@@ -14440,12 +14427,6 @@ lpfc_io_slot_reset_s3(struct pci_dev *pdev)
 	}
 
 	pci_restore_state(pdev);
-
-	/*
-	 * As the new kernel behavior of pci_restore_state() API call clears
-	 * device saved_state flag, need to save the restored state again.
-	 */
-	pci_save_state(pdev);
 
 	if (pdev->is_busmaster)
 		pci_set_master(pdev);

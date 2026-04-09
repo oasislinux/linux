@@ -199,7 +199,7 @@ static blk_status_t ubiblock_read(struct request *req)
 	 * and ubi_read_sg() will check that limit.
 	 */
 	ubi_sgl_init(&pdu->usgl);
-	blk_rq_map_sg(req->q, req, pdu->usgl.sg);
+	blk_rq_map_sg(req, pdu->usgl.sg);
 
 	while (bytes_left) {
 		/*
@@ -282,12 +282,12 @@ static void ubiblock_release(struct gendisk *gd)
 	mutex_unlock(&dev->dev_mutex);
 }
 
-static int ubiblock_getgeo(struct block_device *bdev, struct hd_geometry *geo)
+static int ubiblock_getgeo(struct gendisk *disk, struct hd_geometry *geo)
 {
 	/* Some tools might require this information */
 	geo->heads = 1;
 	geo->cylinders = 1;
-	geo->sectors = get_capacity(bdev->bd_disk);
+	geo->sectors = get_capacity(disk);
 	geo->start = 0;
 	return 0;
 }

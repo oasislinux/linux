@@ -289,7 +289,7 @@
 	};
 
 	can0_pins: can0 {
-		groups = "can0_data";
+		groups = "can0_data_b";
 		function = "can0";
 	};
 
@@ -312,6 +312,7 @@
 &scif0 {
 	pinctrl-0 = <&scif0_pins>;
 	pinctrl-names = "default";
+	bootph-all;
 
 	status = "okay";
 };

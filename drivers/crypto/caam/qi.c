@@ -122,12 +122,12 @@ int caam_qi_enqueue(struct device *qidev, struct caam_drv_req *req)
 	qm_fd_addr_set64(&fd, addr);
 
 	do {
+		refcount_inc(&req->drv_ctx->refcnt);
 		ret = qman_enqueue(req->drv_ctx->req_fq, &fd);
-		if (likely(!ret)) {
-			refcount_inc(&req->drv_ctx->refcnt);
+		if (likely(!ret))
 			return 0;
-		}
 
+		refcount_dec(&req->drv_ctx->refcnt);
 		if (ret != -EBUSY)
 			break;
 		num_retries++;
@@ -442,11 +442,8 @@ struct caam_drv_ctx *caam_drv_ctx_init(struct device *qidev,
 	if (!cpumask_test_cpu(*cpu, cpus)) {
 		int *pcpu = &get_cpu_var(last_cpu);
 
-		*pcpu = cpumask_next(*pcpu, cpus);
-		if (*pcpu >= nr_cpu_ids)
-			*pcpu = cpumask_first(cpus);
+		*pcpu = cpumask_next_wrap(*pcpu, cpus);
 		*cpu = *pcpu;
-
 		put_cpu_var(last_cpu);
 	}
 	drv_ctx->cpu = *cpu;

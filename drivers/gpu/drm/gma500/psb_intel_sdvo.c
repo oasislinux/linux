@@ -36,6 +36,7 @@
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_modeset_helper_vtables.h>
+#include <drm/drm_print.h>
 
 #include "psb_drv.h"
 #include "psb_intel_drv.h"
@@ -1159,7 +1160,7 @@ static void psb_intel_sdvo_dpms(struct drm_encoder *encoder, int mode)
 }
 
 static enum drm_mode_status psb_intel_sdvo_mode_valid(struct drm_connector *connector,
-				 struct drm_display_mode *mode)
+				 const struct drm_display_mode *mode)
 {
 	struct psb_intel_sdvo *psb_intel_sdvo = intel_attached_sdvo(connector);
 

@@ -19,13 +19,19 @@
 
 #include "sysfs.h"
 
+static struct kobject *sysfs_file_kobj(struct kernfs_node *kn)
+{
+	guard(rcu)();
+	return rcu_dereference(kn->__parent)->priv;
+}
+
 /*
  * Determine ktype->sysfs_ops for the given kernfs_node.  This function
  * must be called while holding an active reference.
  */
 static const struct sysfs_ops *sysfs_file_ops(struct kernfs_node *kn)
 {
-	struct kobject *kobj = kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(kn);
 
 	if (kn->flags & KERNFS_LOCKDEP)
 		lockdep_assert_held(kn);
@@ -40,7 +46,7 @@ static const struct sysfs_ops *sysfs_file_ops(struct kernfs_node *kn)
 static int sysfs_kf_seq_show(struct seq_file *sf, void *v)
 {
 	struct kernfs_open_file *of = sf->private;
-	struct kobject *kobj = of->kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 	const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
 	ssize_t count;
 	char *buf;
@@ -77,8 +83,8 @@ static int sysfs_kf_seq_show(struct seq_file *sf, void *v)
 static ssize_t sysfs_kf_bin_read(struct kernfs_open_file *of, char *buf,
 				 size_t count, loff_t pos)
 {
-	struct bin_attribute *battr = of->kn->priv;
-	struct kobject *kobj = of->kn->parent->priv;
+	const struct bin_attribute *battr = of->kn->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 	loff_t size = file_inode(of->file)->i_size;
 
 	if (!count)
@@ -91,11 +97,8 @@ static ssize_t sysfs_kf_bin_read(struct kernfs_open_file *of, char *buf,
 			count = size - pos;
 	}
 
-	if (!battr->read && !battr->read_new)
+	if (!battr->read)
 		return -EIO;
-
-	if (battr->read_new)
-		return battr->read_new(of->file, kobj, battr, buf, pos, count);
 
 	return battr->read(of->file, kobj, battr, buf, pos, count);
 }
@@ -105,7 +108,7 @@ static ssize_t sysfs_kf_read(struct kernfs_open_file *of, char *buf,
 			     size_t count, loff_t pos)
 {
 	const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
-	struct kobject *kobj = of->kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 	ssize_t len;
 
 	/*
@@ -131,7 +134,7 @@ static ssize_t sysfs_kf_write(struct kernfs_open_file *of, char *buf,
 			      size_t count, loff_t pos)
 {
 	const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
-	struct kobject *kobj = of->kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 
 	if (!count)
 		return 0;
@@ -143,8 +146,8 @@ static ssize_t sysfs_kf_write(struct kernfs_open_file *of, char *buf,
 static ssize_t sysfs_kf_bin_write(struct kernfs_open_file *of, char *buf,
 				  size_t count, loff_t pos)
 {
-	struct bin_attribute *battr = of->kn->priv;
-	struct kobject *kobj = of->kn->parent->priv;
+	const struct bin_attribute *battr = of->kn->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 	loff_t size = file_inode(of->file)->i_size;
 
 	if (size) {
@@ -155,11 +158,8 @@ static ssize_t sysfs_kf_bin_write(struct kernfs_open_file *of, char *buf,
 	if (!count)
 		return 0;
 
-	if (!battr->write && !battr->write_new)
+	if (!battr->write)
 		return -EIO;
-
-	if (battr->write_new)
-		return battr->write_new(of->file, kobj, battr, buf, pos, count);
 
 	return battr->write(of->file, kobj, battr, buf, pos, count);
 }
@@ -167,8 +167,8 @@ static ssize_t sysfs_kf_bin_write(struct kernfs_open_file *of, char *buf,
 static int sysfs_kf_bin_mmap(struct kernfs_open_file *of,
 			     struct vm_area_struct *vma)
 {
-	struct bin_attribute *battr = of->kn->priv;
-	struct kobject *kobj = of->kn->parent->priv;
+	const struct bin_attribute *battr = of->kn->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 
 	return battr->mmap(of->file, kobj, battr, vma);
 }
@@ -176,8 +176,8 @@ static int sysfs_kf_bin_mmap(struct kernfs_open_file *of,
 static loff_t sysfs_kf_bin_llseek(struct kernfs_open_file *of, loff_t offset,
 				  int whence)
 {
-	struct bin_attribute *battr = of->kn->priv;
-	struct kobject *kobj = of->kn->parent->priv;
+	const struct bin_attribute *battr = of->kn->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 
 	if (battr->llseek)
 		return battr->llseek(of->file, kobj, battr, offset, whence);
@@ -187,7 +187,7 @@ static loff_t sysfs_kf_bin_llseek(struct kernfs_open_file *of, loff_t offset,
 
 static int sysfs_kf_bin_open(struct kernfs_open_file *of)
 {
-	struct bin_attribute *battr = of->kn->priv;
+	const struct bin_attribute *battr = of->kn->priv;
 
 	if (battr->f_mapping)
 		of->file->f_mapping = battr->f_mapping();
@@ -329,19 +329,13 @@ int sysfs_add_bin_file_mode_ns(struct kernfs_node *parent,
 	const struct kernfs_ops *ops;
 	struct kernfs_node *kn;
 
-	if (battr->read && battr->read_new)
-		return -EINVAL;
-
-	if (battr->write && battr->write_new)
-		return -EINVAL;
-
 	if (battr->mmap)
 		ops = &sysfs_bin_kfops_mmap;
-	else if ((battr->read || battr->read_new) && (battr->write || battr->write_new))
+	else if (battr->read && battr->write)
 		ops = &sysfs_bin_kfops_rw;
-	else if (battr->read || battr->read_new)
+	else if (battr->read)
 		ops = &sysfs_bin_kfops_ro;
-	else if (battr->write || battr->write_new)
+	else if (battr->write)
 		ops = &sysfs_bin_kfops_wo;
 	else
 		ops = &sysfs_file_kfops_empty;
@@ -494,7 +488,7 @@ EXPORT_SYMBOL_GPL(sysfs_break_active_protection);
  */
 void sysfs_unbreak_active_protection(struct kernfs_node *kn)
 {
-	struct kobject *kobj = kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(kn);
 
 	kernfs_unbreak_active_protection(kn);
 	kernfs_put(kn);

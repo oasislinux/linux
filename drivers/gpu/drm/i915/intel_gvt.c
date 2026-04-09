@@ -21,6 +21,8 @@
  * SOFTWARE.
  */
 
+#include <drm/drm_print.h>
+
 #include "i915_drv.h"
 #include "i915_vgpu.h"
 #include "intel_gvt.h"
@@ -265,7 +267,7 @@ void intel_gvt_driver_remove(struct drm_i915_private *dev_priv)
 }
 
 /**
- * intel_gvt_resume - GVT resume routine wapper
+ * intel_gvt_resume - GVT resume routine wrapper
  *
  * @dev_priv: drm i915 private *
  *

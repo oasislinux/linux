@@ -33,8 +33,10 @@
  */
 
 #include <drm/display/drm_dp.h>
+#include <drm/drm_print.h>
 
 #include "display/intel_dp_aux_regs.h"
+#include "display/intel_gmbus.h"
 #include "display/intel_gmbus_regs.h"
 #include "gvt.h"
 #include "i915_drv.h"
@@ -298,7 +300,7 @@ static int gmbus3_mmio_read(struct intel_vgpu *vgpu, unsigned int offset,
 	int byte_count = byte_left;
 	u32 reg_data = 0;
 
-	/* Data can only be recevied if previous settings correct */
+	/* Data can only be received if previous settings correct */
 	if (vgpu_vreg_t(vgpu, PCH_GMBUS1) & GMBUS_SLAVE_READ) {
 		if (byte_left <= 0) {
 			memcpy(p_data, &vgpu_vreg(vgpu, offset), bytes);

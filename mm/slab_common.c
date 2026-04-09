@@ -2,7 +2,7 @@
 /*
  * Slab allocator functions that are independent of the allocator strategy
  *
- * (C) 2012 Christoph Lameter <cl@linux.com>
+ * (C) 2012 Christoph Lameter <cl@gentwo.org>
  */
 #include <linux/slab.h>
 
@@ -163,6 +163,9 @@ int slab_unmergeable(struct kmem_cache *s)
 		return 1;
 #endif
 
+	if (s->cpu_sheaves)
+		return 1;
+
 	/*
 	 * We may have set a slab to be unmergeable during bootstrap.
 	 */
@@ -256,7 +259,7 @@ out:
  * @object_size: The size of objects to be created in this cache.
  * @args: Additional arguments for the cache creation (see
  *        &struct kmem_cache_args).
- * @flags: See the desriptions of individual flags. The common ones are listed
+ * @flags: See the descriptions of individual flags. The common ones are listed
  *         in the description below.
  *
  * Not to be called directly, use the kmem_cache_create() wrapper with the same
@@ -298,6 +301,8 @@ struct kmem_cache *__kmem_cache_create_args(const char *name,
 		static_branch_enable(&slub_debug_enabled);
 	if (flags & SLAB_STORE_USER)
 		stack_depot_init();
+#else
+	flags &= ~SLAB_DEBUG_FLAGS;
 #endif
 
 	mutex_lock(&slab_mutex);
@@ -307,19 +312,10 @@ struct kmem_cache *__kmem_cache_create_args(const char *name,
 		goto out_unlock;
 	}
 
-	/* Refuse requests with allocator specific flags */
 	if (flags & ~SLAB_FLAGS_PERMITTED) {
 		err = -EINVAL;
 		goto out_unlock;
 	}
-
-	/*
-	 * Some allocators will constraint the set of valid flags to a subset
-	 * of all flags. We expect them to define CACHE_CREATE_MASK in this
-	 * case, and we'll just provide them with a sanitized version of the
-	 * passed flags.
-	 */
-	flags &= CACHE_CREATE_MASK;
 
 	/* Fail closed on bad usersize of useroffset values. */
 	if (!IS_ENABLED(CONFIG_HARDENED_USERCOPY) ||
@@ -328,7 +324,7 @@ struct kmem_cache *__kmem_cache_create_args(const char *name,
 		    object_size - args->usersize < args->useroffset))
 		args->usersize = args->useroffset = 0;
 
-	if (!args->usersize)
+	if (!args->usersize && !args->sheaf_capacity)
 		s = __kmem_cache_alias(name, object_size, args->align, flags,
 				       args->ctor);
 	if (s)
@@ -496,7 +492,7 @@ void kmem_cache_destroy(struct kmem_cache *s)
 		return;
 
 	/* in-flight kfree_rcu()'s may include objects from our cache */
-	kvfree_rcu_barrier();
+	kvfree_rcu_barrier_on_cache(s);
 
 	if (IS_ENABLED(CONFIG_SLUB_RCU_DEBUG) &&
 	    (s->flags & SLAB_TYPESAFE_BY_RCU)) {
@@ -513,6 +509,9 @@ void kmem_cache_destroy(struct kmem_cache *s)
 		 */
 		rcu_barrier();
 	}
+
+	/* Wait for deferred work from kmalloc/kfree_nolock() */
+	defer_free_barrier();
 
 	cpus_read_lock();
 	mutex_lock(&slab_mutex);
@@ -998,26 +997,27 @@ void __init create_kmalloc_caches(void)
  */
 size_t __ksize(const void *object)
 {
-	struct folio *folio;
+	const struct page *page;
+	const struct slab *slab;
 
 	if (unlikely(object == ZERO_SIZE_PTR))
 		return 0;
 
-	folio = virt_to_folio(object);
+	page = virt_to_page(object);
 
-	if (unlikely(!folio_test_slab(folio))) {
-		if (WARN_ON(folio_size(folio) <= KMALLOC_MAX_CACHE_SIZE))
-			return 0;
-		if (WARN_ON(object != folio_address(folio)))
-			return 0;
-		return folio_size(folio);
-	}
+	if (unlikely(PageLargeKmalloc(page)))
+		return large_kmalloc_size(page);
+
+	slab = page_slab(page);
+	/* Delete this after we're sure there are no users */
+	if (WARN_ON(!slab))
+		return page_size(page);
 
 #ifdef CONFIG_SLUB_DEBUG
-	skip_orig_size_check(folio_slab(folio)->slab_cache, object);
+	skip_orig_size_check(slab->slab_cache, object);
 #endif
 
-	return slab_ksize(folio_slab(folio)->slab_cache);
+	return slab_ksize(slab->slab_cache);
 }
 
 gfp_t kmalloc_fix_flags(gfp_t flags)
@@ -1284,6 +1284,29 @@ EXPORT_TRACEPOINT_SYMBOL(kmem_cache_alloc);
 EXPORT_TRACEPOINT_SYMBOL(kfree);
 EXPORT_TRACEPOINT_SYMBOL(kmem_cache_free);
 
+#ifndef CONFIG_KVFREE_RCU_BATCHED
+
+void kvfree_call_rcu(struct rcu_head *head, void *ptr)
+{
+	if (head) {
+		kasan_record_aux_stack(ptr);
+		call_rcu(head, kvfree_rcu_cb);
+		return;
+	}
+
+	// kvfree_rcu(one_arg) call.
+	might_sleep();
+	synchronize_rcu();
+	kvfree(ptr);
+}
+EXPORT_SYMBOL_GPL(kvfree_call_rcu);
+
+void __init kvfree_rcu_init(void)
+{
+}
+
+#else /* CONFIG_KVFREE_RCU_BATCHED */
+
 /*
  * This rcu parameter is runtime-read-only. It reflects
  * a minimum allowed number of objects which can be cached
@@ -1534,8 +1557,7 @@ kvfree_rcu_list(struct rcu_head *head)
 		rcu_lock_acquire(&rcu_callback_map);
 		trace_rcu_invoke_kvfree_callback("slab", head, offset);
 
-		if (!WARN_ON_ONCE(!__is_kvfree_rcu_offset(offset)))
-			kvfree(ptr);
+		kvfree(ptr);
 
 		rcu_lock_release(&rcu_callback_map);
 		cond_resched_tasks_rcu_qs();
@@ -1588,6 +1610,28 @@ static void kfree_rcu_work(struct work_struct *work)
 	 */
 	if (head && !WARN_ON_ONCE(!poll_state_synchronize_rcu_full(&head_gp_snap)))
 		kvfree_rcu_list(head);
+}
+
+static bool kfree_rcu_sheaf(void *obj)
+{
+	struct kmem_cache *s;
+	struct slab *slab;
+
+	if (is_vmalloc_addr(obj))
+		return false;
+
+	slab = virt_to_slab(obj);
+	if (unlikely(!slab))
+		return false;
+
+	s = slab->slab_cache;
+	if (s->cpu_sheaves) {
+		if (likely(!IS_ENABLED(CONFIG_NUMA) ||
+			   slab_nid(slab) == numa_mem_id()))
+			return __kfree_rcu_sheaf(s, obj);
+	}
+
+	return false;
 }
 
 static bool
@@ -1863,8 +1907,6 @@ add_ptr_to_bulk_krc_lock(struct kfree_rcu_cpu **krcp,
 	return true;
 }
 
-#if !defined(CONFIG_TINY_RCU)
-
 static enum hrtimer_restart
 schedule_page_work_fn(struct hrtimer *t)
 {
@@ -1889,8 +1931,8 @@ run_page_cache_worker(struct kfree_rcu_cpu *krcp)
 				&krcp->page_cache_work,
 					msecs_to_jiffies(rcu_delay_page_cache_fill_msec));
 		} else {
-			hrtimer_init(&krcp->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-			krcp->hrtimer.function = schedule_page_work_fn;
+			hrtimer_setup(&krcp->hrtimer, schedule_page_work_fn, CLOCK_MONOTONIC,
+				      HRTIMER_MODE_REL);
 			hrtimer_start(&krcp->hrtimer, 0, HRTIMER_MODE_REL);
 		}
 	}
@@ -1935,6 +1977,9 @@ void kvfree_call_rcu(struct rcu_head *head, void *ptr)
 	 */
 	if (!head)
 		might_sleep();
+
+	if (!IS_ENABLED(CONFIG_PREEMPT_RT) && kfree_rcu_sheaf(ptr))
+		return;
 
 	// Queue the object but don't yet schedule the batch.
 	if (debug_rcu_head_queue(ptr)) {
@@ -1993,17 +2038,7 @@ unlock_return:
 }
 EXPORT_SYMBOL_GPL(kvfree_call_rcu);
 
-/**
- * kvfree_rcu_barrier - Wait until all in-flight kvfree_rcu() complete.
- *
- * Note that a single argument of kvfree_rcu() call has a slow path that
- * triggers synchronize_rcu() following by freeing a pointer. It is done
- * before the return from the function. Therefore for any single-argument
- * call that will result in a kfree() to a cache that is to be destroyed
- * during module exit, it is developer's responsibility to ensure that all
- * such calls have returned before the call to kmem_cache_destroy().
- */
-void kvfree_rcu_barrier(void)
+static inline void __kvfree_rcu_barrier(void)
 {
 	struct kfree_rcu_cpu_work *krwp;
 	struct kfree_rcu_cpu *krcp;
@@ -2071,9 +2106,42 @@ void kvfree_rcu_barrier(void)
 		}
 	}
 }
+
+/**
+ * kvfree_rcu_barrier - Wait until all in-flight kvfree_rcu() complete.
+ *
+ * Note that a single argument of kvfree_rcu() call has a slow path that
+ * triggers synchronize_rcu() following by freeing a pointer. It is done
+ * before the return from the function. Therefore for any single-argument
+ * call that will result in a kfree() to a cache that is to be destroyed
+ * during module exit, it is developer's responsibility to ensure that all
+ * such calls have returned before the call to kmem_cache_destroy().
+ */
+void kvfree_rcu_barrier(void)
+{
+	flush_all_rcu_sheaves();
+	__kvfree_rcu_barrier();
+}
 EXPORT_SYMBOL_GPL(kvfree_rcu_barrier);
 
-#endif /* #if !defined(CONFIG_TINY_RCU) */
+/**
+ * kvfree_rcu_barrier_on_cache - Wait for in-flight kvfree_rcu() calls on a
+ *                               specific slab cache.
+ * @s: slab cache to wait for
+ *
+ * See the description of kvfree_rcu_barrier() for details.
+ */
+void kvfree_rcu_barrier_on_cache(struct kmem_cache *s)
+{
+	if (s->cpu_sheaves)
+		flush_rcu_sheaves_on_cache(s);
+	/*
+	 * TODO: Introduce a version of __kvfree_rcu_barrier() that works
+	 * on a specific slab cache.
+	 */
+	__kvfree_rcu_barrier();
+}
+EXPORT_SYMBOL_GPL(kvfree_rcu_barrier_on_cache);
 
 static unsigned long
 kfree_rcu_shrink_count(struct shrinker *shrink, struct shrink_control *sc)
@@ -2168,3 +2236,5 @@ void __init kvfree_rcu_init(void)
 
 	shrinker_register(kfree_rcu_shrinker);
 }
+
+#endif /* CONFIG_KVFREE_RCU_BATCHED */

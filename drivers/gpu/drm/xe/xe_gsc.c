@@ -59,7 +59,8 @@ static int memcpy_fw(struct xe_gsc *gsc)
 
 	xe_map_memcpy_from(xe, storage, &gsc->fw.bo->vmap, 0, fw_size);
 	xe_map_memcpy_to(xe, &gsc->private->vmap, 0, storage, fw_size);
-	xe_map_memset(xe, &gsc->private->vmap, fw_size, 0, gsc->private->size - fw_size);
+	xe_map_memset(xe, &gsc->private->vmap, fw_size, 0,
+		      xe_bo_size(gsc->private) - fw_size);
 
 	kfree(storage);
 
@@ -82,7 +83,8 @@ static int emit_gsc_upload(struct xe_gsc *gsc)
 	bb->cs[bb->len++] = GSC_FW_LOAD;
 	bb->cs[bb->len++] = lower_32_bits(offset);
 	bb->cs[bb->len++] = upper_32_bits(offset);
-	bb->cs[bb->len++] = (gsc->private->size / SZ_4K) | GSC_FW_LOAD_LIMIT_VALID;
+	bb->cs[bb->len++] = (xe_bo_size(gsc->private) / SZ_4K) |
+		GSC_FW_LOAD_LIMIT_VALID;
 
 	job = xe_bb_create_job(gsc->q, bb);
 	if (IS_ERR(job)) {
@@ -134,10 +136,10 @@ static int query_compatibility_version(struct xe_gsc *gsc)
 	u64 ggtt_offset;
 	int err;
 
-	bo = xe_bo_create_pin_map(xe, tile, NULL, GSC_VER_PKT_SZ * 2,
-				  ttm_bo_type_kernel,
-				  XE_BO_FLAG_SYSTEM |
-				  XE_BO_FLAG_GGTT);
+	bo = xe_bo_create_pin_map_novm(xe, tile, GSC_VER_PKT_SZ * 2,
+				       ttm_bo_type_kernel,
+				       XE_BO_FLAG_SYSTEM |
+				       XE_BO_FLAG_GGTT, false);
 	if (IS_ERR(bo)) {
 		xe_gt_err(gt, "failed to allocate bo for GSC version query\n");
 		return PTR_ERR(bo);
@@ -264,7 +266,7 @@ static int gsc_upload_and_init(struct xe_gsc *gsc)
 	unsigned int fw_ref;
 	int ret;
 
-	if (XE_WA(tile->primary_gt, 14018094691)) {
+	if (tile->primary_gt && XE_GT_WA(tile->primary_gt, 14018094691)) {
 		fw_ref = xe_force_wake_get(gt_to_fw(tile->primary_gt), XE_FORCEWAKE_ALL);
 
 		/*
@@ -279,7 +281,7 @@ static int gsc_upload_and_init(struct xe_gsc *gsc)
 
 	ret = gsc_upload(gsc);
 
-	if (XE_WA(tile->primary_gt, 14018094691))
+	if (tile->primary_gt && XE_GT_WA(tile->primary_gt, 14018094691))
 		xe_force_wake_put(gt_to_fw(tile->primary_gt), fw_ref);
 
 	if (ret)
@@ -555,13 +557,26 @@ void xe_gsc_wait_for_worker_completion(struct xe_gsc *gsc)
 		flush_work(&gsc->work);
 }
 
-/**
- * xe_gsc_remove() - Clean up the GSC structures before driver removal
- * @gsc: the GSC uC
- */
-void xe_gsc_remove(struct xe_gsc *gsc)
+void xe_gsc_stop_prepare(struct xe_gsc *gsc)
 {
-	xe_gsc_proxy_remove(gsc);
+	struct xe_gt *gt = gsc_to_gt(gsc);
+	int ret;
+
+	if (!xe_uc_fw_is_loadable(&gsc->fw) || xe_uc_fw_is_in_error_state(&gsc->fw))
+		return;
+
+	xe_force_wake_assert_held(gt_to_fw(gt), XE_FW_GSC);
+
+	/*
+	 * If the GSC FW load or the proxy init are interrupted, the only way
+	 * to recover it is to do an FLR and reload the GSC from scratch.
+	 * Therefore, let's wait for the init to complete before stopping
+	 * operations. The proxy init is the last step, so we can just wait on
+	 * that
+	 */
+	ret = xe_gsc_wait_for_proxy_init_done(gsc);
+	if (ret)
+		xe_gt_err(gt, "failed to wait for GSC init completion before uc stop\n");
 }
 
 /*
@@ -578,7 +593,7 @@ void xe_gsc_wa_14015076503(struct xe_gt *gt, bool prep)
 	u32 gs1_clr = prep ? 0 : HECI_H_GS1_ER_PREP;
 
 	/* WA only applies if the GSC is loaded */
-	if (!XE_WA(gt, 14015076503) || !gsc_fw_is_loaded(gt))
+	if (!XE_GT_WA(gt, 14015076503) || !gsc_fw_is_loaded(gt))
 		return;
 
 	xe_mmio_rmw32(&gt->mmio, HECI_H_GS1(MTL_GSC_HECI2_BASE), gs1_clr, gs1_set);

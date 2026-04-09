@@ -202,7 +202,7 @@ static const struct soc_enum tegra210_ope_data_dir_enum =
 static int tegra210_ope_get_data_dir(struct snd_kcontrol *kcontrol,
 				     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
 	struct tegra210_ope *ope = snd_soc_component_get_drvdata(cmpnt);
 
 	ucontrol->value.enumerated.item[0] = ope->data_dir;
@@ -213,7 +213,7 @@ static int tegra210_ope_get_data_dir(struct snd_kcontrol *kcontrol,
 static int tegra210_ope_put_data_dir(struct snd_kcontrol *kcontrol,
 				     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
 	struct tegra210_ope *ope = snd_soc_component_get_drvdata(cmpnt);
 	unsigned int value = ucontrol->value.enumerated.item[0];
 
@@ -356,7 +356,7 @@ static void tegra210_ope_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 }
 
-static int __maybe_unused tegra210_ope_runtime_suspend(struct device *dev)
+static int tegra210_ope_runtime_suspend(struct device *dev)
 {
 	struct tegra210_ope *ope = dev_get_drvdata(dev);
 
@@ -374,7 +374,7 @@ static int __maybe_unused tegra210_ope_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused tegra210_ope_runtime_resume(struct device *dev)
+static int tegra210_ope_runtime_resume(struct device *dev)
 {
 	struct tegra210_ope *ope = dev_get_drvdata(dev);
 
@@ -393,10 +393,9 @@ static int __maybe_unused tegra210_ope_runtime_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops tegra210_ope_pm_ops = {
-	SET_RUNTIME_PM_OPS(tegra210_ope_runtime_suspend,
-			   tegra210_ope_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(tegra210_ope_runtime_suspend,
+		       tegra210_ope_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static const struct of_device_id tegra210_ope_of_match[] = {
@@ -409,7 +408,7 @@ static struct platform_driver tegra210_ope_driver = {
 	.driver = {
 		.name = "tegra210-ope",
 		.of_match_table = tegra210_ope_of_match,
-		.pm = &tegra210_ope_pm_ops,
+		.pm = pm_ptr(&tegra210_ope_pm_ops),
 	},
 	.probe = tegra210_ope_probe,
 	.remove = tegra210_ope_remove,

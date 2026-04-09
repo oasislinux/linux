@@ -859,7 +859,7 @@ static int corkscrew_open(struct net_device *dev)
 static void corkscrew_timer(struct timer_list *t)
 {
 #ifdef AUTOMEDIA
-	struct corkscrew_private *vp = from_timer(vp, t, timer);
+	struct corkscrew_private *vp = timer_container_of(vp, t, timer);
 	struct net_device *dev = vp->our_dev;
 	int ioaddr = dev->base_addr;
 	unsigned long flags;
@@ -1414,7 +1414,7 @@ static int corkscrew_close(struct net_device *dev)
 			dev->name, rx_nocopy, rx_copy, queued_packet);
 	}
 
-	del_timer_sync(&vp->timer);
+	timer_delete_sync(&vp->timer);
 
 	/* Turn off statistics ASAP.  We update lp->stats below. */
 	outw(StatsDisable, ioaddr + EL3_CMD);
@@ -1547,9 +1547,8 @@ static const struct ethtool_ops netdev_ethtool_ops = {
 	.set_msglevel		= netdev_set_msglevel,
 };
 
-
 #ifdef MODULE
-void cleanup_module(void)
+static void __exit corkscrew_exit_module(void)
 {
 	while (!list_empty(&root_corkscrew_dev)) {
 		struct net_device *dev;
@@ -1563,4 +1562,5 @@ void cleanup_module(void)
 		free_netdev(dev);
 	}
 }
+module_exit(corkscrew_exit_module);
 #endif				/* MODULE */

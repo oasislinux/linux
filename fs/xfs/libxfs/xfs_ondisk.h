@@ -174,7 +174,11 @@ xfs_check_ondisk_structs(void)
 	XFS_CHECK_STRUCT_SIZE(struct xfs_rud_log_format,	16);
 	XFS_CHECK_STRUCT_SIZE(struct xfs_map_extent,		32);
 	XFS_CHECK_STRUCT_SIZE(struct xfs_phys_extent,		16);
+	XFS_CHECK_STRUCT_SIZE(struct xlog_rec_header,		512);
+	XFS_CHECK_STRUCT_SIZE(struct xlog_rec_ext_header,	512);
 
+	XFS_CHECK_OFFSET(struct xlog_rec_header, h_reserved,		328);
+	XFS_CHECK_OFFSET(struct xlog_rec_ext_header, xh_reserved,	260);
 	XFS_CHECK_OFFSET(struct xfs_bui_log_format, bui_extents,	16);
 	XFS_CHECK_OFFSET(struct xfs_cui_log_format, cui_extents,	16);
 	XFS_CHECK_OFFSET(struct xfs_rui_log_format, rui_extents,	16);
@@ -233,8 +237,8 @@ xfs_check_ondisk_structs(void)
 			16299260424LL);
 
 	/* superblock field checks we got from xfs/122 */
-	XFS_CHECK_STRUCT_SIZE(struct xfs_dsb,		288);
-	XFS_CHECK_STRUCT_SIZE(struct xfs_sb,		288);
+	XFS_CHECK_STRUCT_SIZE(struct xfs_dsb,		304);
+	XFS_CHECK_STRUCT_SIZE(struct xfs_sb,		304);
 	XFS_CHECK_SB_OFFSET(sb_magicnum,		0);
 	XFS_CHECK_SB_OFFSET(sb_blocksize,		4);
 	XFS_CHECK_SB_OFFSET(sb_dblocks,			8);
@@ -295,6 +299,8 @@ xfs_check_ondisk_structs(void)
 	XFS_CHECK_SB_OFFSET(sb_rgextents,		276);
 	XFS_CHECK_SB_OFFSET(sb_rgblklog,		280);
 	XFS_CHECK_SB_OFFSET(sb_pad,			281);
+	XFS_CHECK_SB_OFFSET(sb_rtstart,			288);
+	XFS_CHECK_SB_OFFSET(sb_rtreserved,		296);
 }
 
 #endif /* __XFS_ONDISK_H */

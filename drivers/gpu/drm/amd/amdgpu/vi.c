@@ -67,7 +67,6 @@
 #include "sdma_v2_4.h"
 #include "sdma_v3_0.h"
 #include "dce_v10_0.h"
-#include "dce_v11_0.h"
 #include "iceland_ih.h"
 #include "tonga_ih.h"
 #include "cz_ih.h"
@@ -238,6 +237,13 @@ static const struct amdgpu_video_codec_info cz_video_codecs_decode_array[] =
 		.max_height = 4096,
 		.max_pixels_per_frame = 4096 * 4096,
 		.max_level = 186,
+	},
+	{
+		.codec_type = AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_JPEG,
+		.max_width = 4096,
+		.max_height = 4096,
+		.max_pixels_per_frame = 4096 * 4096,
+		.max_level = 0,
 	},
 };
 
@@ -1729,7 +1735,7 @@ static int vi_common_resume(struct amdgpu_ip_block *ip_block)
 	return vi_common_hw_init(ip_block);
 }
 
-static bool vi_common_is_idle(void *handle)
+static bool vi_common_is_idle(struct amdgpu_ip_block *ip_block)
 {
 	return true;
 }
@@ -1987,9 +1993,9 @@ static int vi_common_set_powergating_state(struct amdgpu_ip_block *ip_block,
 	return 0;
 }
 
-static void vi_common_get_clockgating_state(void *handle, u64 *flags)
+static void vi_common_get_clockgating_state(struct amdgpu_ip_block *ip_block, u64 *flags)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	int data;
 
 	if (amdgpu_sriov_vf(adev))
@@ -2117,8 +2123,6 @@ int vi_set_ip_blocks(struct amdgpu_device *adev)
 		else if (amdgpu_device_has_dc_support(adev))
 			amdgpu_device_ip_block_add(adev, &dm_ip_block);
 #endif
-		else
-			amdgpu_device_ip_block_add(adev, &dce_v11_2_ip_block);
 		amdgpu_device_ip_block_add(adev, &uvd_v6_3_ip_block);
 		amdgpu_device_ip_block_add(adev, &vce_v3_4_ip_block);
 		break;
@@ -2135,8 +2139,6 @@ int vi_set_ip_blocks(struct amdgpu_device *adev)
 		else if (amdgpu_device_has_dc_support(adev))
 			amdgpu_device_ip_block_add(adev, &dm_ip_block);
 #endif
-		else
-			amdgpu_device_ip_block_add(adev, &dce_v11_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &uvd_v6_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &vce_v3_1_ip_block);
 #if defined(CONFIG_DRM_AMD_ACP)
@@ -2156,8 +2158,6 @@ int vi_set_ip_blocks(struct amdgpu_device *adev)
 		else if (amdgpu_device_has_dc_support(adev))
 			amdgpu_device_ip_block_add(adev, &dm_ip_block);
 #endif
-		else
-			amdgpu_device_ip_block_add(adev, &dce_v11_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &uvd_v6_2_ip_block);
 		amdgpu_device_ip_block_add(adev, &vce_v3_4_ip_block);
 #if defined(CONFIG_DRM_AMD_ACP)

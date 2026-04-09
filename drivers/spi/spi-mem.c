@@ -12,6 +12,9 @@
 #include <linux/spi/spi-mem.h>
 #include <linux/sched/task_stack.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/spi-mem.h>
+
 #include "internals.h"
 
 #define SPI_MEM_MAX_BUSWIDTH		8
@@ -265,6 +268,9 @@ static bool spi_mem_internal_supports_op(struct spi_mem *mem,
  */
 bool spi_mem_supports_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
+	/* Make sure the operation frequency is correct before going futher */
+	spi_mem_adjust_op_freq(mem, (struct spi_mem_op *)op);
+
 	if (spi_mem_check_op(op))
 		return false;
 
@@ -377,6 +383,17 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	/* Make sure the operation frequency is correct before going futher */
 	spi_mem_adjust_op_freq(mem, (struct spi_mem_op *)op);
 
+	dev_vdbg(&mem->spi->dev, "[cmd: 0x%02x][%dB addr: %#8llx][%2dB dummy][%4dB data %s] %d%c-%d%c-%d%c-%d%c @ %uHz\n",
+		 op->cmd.opcode,
+		 op->addr.nbytes, (op->addr.nbytes ? op->addr.val : 0),
+		 op->dummy.nbytes,
+		 op->data.nbytes, (op->data.nbytes ? (op->data.dir == SPI_MEM_DATA_IN ? " read" : "write") : "     "),
+		 op->cmd.buswidth, op->cmd.dtr ? 'D' : 'S',
+		 op->addr.buswidth, op->addr.dtr ? 'D' : 'S',
+		 op->dummy.buswidth, op->dummy.dtr ? 'D' : 'S',
+		 op->data.buswidth, op->data.dtr ? 'D' : 'S',
+		 op->max_freq ? op->max_freq : mem->spi->max_speed_hz);
+
 	ret = spi_mem_check_op(op);
 	if (ret)
 		return ret;
@@ -389,7 +406,9 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		if (ret)
 			return ret;
 
+		trace_spi_mem_start_op(mem, op);
 		ret = ctlr->mem_ops->exec_op(mem, op);
+		trace_spi_mem_stop_op(mem, op);
 
 		spi_mem_access_end(mem);
 
@@ -566,6 +585,7 @@ EXPORT_SYMBOL_GPL(spi_mem_adjust_op_freq);
  * spi_mem_calc_op_duration() - Derives the theoretical length (in ns) of an
  *			        operation. This helps finding the best variant
  *			        among a list of possible choices.
+ * @mem: the SPI memory
  * @op: the operation to benchmark
  *
  * Some chips have per-op frequency limitations, PCBs usually have their own
@@ -575,20 +595,41 @@ EXPORT_SYMBOL_GPL(spi_mem_adjust_op_freq);
  * accurate, all these combinations should be rated (eg. with a time estimate)
  * and the best pick should be taken based on these calculations.
  *
- * Returns a ns estimate for the time this op would take.
+ * Returns a ns estimate for the time this op would take, except if no
+ * frequency limit has been set, in this case we return the number of
+ * cycles nevertheless to allow callers to distinguish which operation
+ * would be the fastest at iso-frequency.
  */
-u64 spi_mem_calc_op_duration(struct spi_mem_op *op)
+u64 spi_mem_calc_op_duration(struct spi_mem *mem, struct spi_mem_op *op)
 {
 	u64 ncycles = 0;
-	u32 ns_per_cycles;
+	u64 ps_per_cycles, duration;
 
-	ns_per_cycles = 1000000000 / op->max_freq;
+	spi_mem_adjust_op_freq(mem, op);
+
+	if (op->max_freq) {
+		ps_per_cycles = 1000000000000ULL;
+		do_div(ps_per_cycles, op->max_freq);
+	} else {
+		/* In this case, the unit is no longer a time unit */
+		ps_per_cycles = 1;
+	}
+
 	ncycles += ((op->cmd.nbytes * 8) / op->cmd.buswidth) / (op->cmd.dtr ? 2 : 1);
 	ncycles += ((op->addr.nbytes * 8) / op->addr.buswidth) / (op->addr.dtr ? 2 : 1);
-	ncycles += ((op->dummy.nbytes * 8) / op->dummy.buswidth) / (op->dummy.dtr ? 2 : 1);
+
+	/* Dummy bytes are optional for some SPI flash memory operations */
+	if (op->dummy.nbytes)
+		ncycles += ((op->dummy.nbytes * 8) / op->dummy.buswidth) / (op->dummy.dtr ? 2 : 1);
+
 	ncycles += ((op->data.nbytes * 8) / op->data.buswidth) / (op->data.dtr ? 2 : 1);
 
-	return ncycles * ns_per_cycles;
+	/* Derive the duration in ps */
+	duration = ncycles * ps_per_cycles;
+	/* Convert into ns */
+	do_div(duration, 1000);
+
+	return duration;
 }
 EXPORT_SYMBOL_GPL(spi_mem_calc_op_duration);
 

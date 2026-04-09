@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 /*
  * Copyright © 2021-2022 Intel Corporation
- * Copyright (C) 2021-2002 Red Hat
+ * Copyright (C) 2021-2022 Red Hat
  */
 
 #include "xe_ttm_sys_mgr.h"
@@ -85,7 +85,7 @@ static const struct ttm_resource_manager_func xe_ttm_sys_mgr_func = {
 	.debug = xe_ttm_sys_mgr_debug
 };
 
-static void ttm_sys_mgr_fini(struct drm_device *drm, void *arg)
+static void xe_ttm_sys_mgr_fini(struct drm_device *drm, void *arg)
 {
 	struct xe_device *xe = (struct xe_device *)arg;
 	struct ttm_resource_manager *man = &xe->mem.sys_mgr;
@@ -108,14 +108,13 @@ int xe_ttm_sys_mgr_init(struct xe_device *xe)
 	u64 gtt_size;
 
 	si_meminfo(&si);
+	/* Potentially restrict amount of TT memory here. */
 	gtt_size = (u64)si.totalram * si.mem_unit;
-	/* TTM limits allocation of all TTM devices by 50% of system memory */
-	gtt_size /= 2;
 
 	man->use_tt = true;
 	man->func = &xe_ttm_sys_mgr_func;
 	ttm_resource_manager_init(man, &xe->ttm, gtt_size >> PAGE_SHIFT);
 	ttm_set_driver_manager(&xe->ttm, XE_PL_TT, man);
 	ttm_resource_manager_set_used(man, true);
-	return drmm_add_action_or_reset(&xe->drm, ttm_sys_mgr_fini, xe);
+	return drmm_add_action_or_reset(&xe->drm, xe_ttm_sys_mgr_fini, xe);
 }

@@ -155,6 +155,7 @@ struct hsr_port {
 	struct hsr_priv		*hsr;
 	enum hsr_port_type	type;
 	struct rcu_head		rcu;
+	unsigned char		original_macaddress[ETH_ALEN];
 };
 
 struct hsr_frame_info;
@@ -175,6 +176,8 @@ struct hsr_proto_ops {
 			       struct hsr_frame_info *frame);
 	bool (*invalid_dan_ingress_frame)(__be16 protocol);
 	void (*update_san_info)(struct hsr_node *node, bool is_sup);
+	int (*register_frame_out)(struct hsr_port *port,
+				  struct hsr_frame_info *frame);
 };
 
 struct hsr_self_node {
@@ -220,6 +223,9 @@ struct hsr_priv {
 
 #define hsr_for_each_port(hsr, port) \
 	list_for_each_entry_rcu((port), &(hsr)->ports, port_list)
+
+#define hsr_for_each_port_rtnl(hsr, port) \
+	list_for_each_entry_rcu((port), &(hsr)->ports, port_list, lockdep_rtnl_is_held())
 
 struct hsr_port *hsr_port_get_hsr(struct hsr_priv *hsr, enum hsr_port_type pt);
 

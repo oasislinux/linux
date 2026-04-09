@@ -254,6 +254,8 @@ EXT4_ATTR(journal_task, 0444, journal_task);
 EXT4_RW_ATTR_SBI_UI(mb_prefetch, s_mb_prefetch);
 EXT4_RW_ATTR_SBI_UI(mb_prefetch_limit, s_mb_prefetch_limit);
 EXT4_RW_ATTR_SBI_UL(last_trim_minblks, s_last_trim_minblks);
+EXT4_RW_ATTR_SBI_UI(sb_update_sec, s_sb_update_sec);
+EXT4_RW_ATTR_SBI_UI(sb_update_kb, s_sb_update_kb);
 
 static unsigned int old_bump_val = 128;
 EXT4_ATTR_PTR(max_writeback_mb_bump, 0444, pointer_ui, &old_bump_val);
@@ -305,6 +307,8 @@ static struct attribute *ext4_attrs[] = {
 	ATTR_LIST(mb_prefetch),
 	ATTR_LIST(mb_prefetch_limit),
 	ATTR_LIST(last_trim_minblks),
+	ATTR_LIST(sb_update_sec),
+	ATTR_LIST(sb_update_kb),
 	NULL,
 };
 ATTRIBUTE_GROUPS(ext4);
@@ -328,6 +332,9 @@ EXT4_ATTR_FEATURE(fast_commit);
 #if IS_ENABLED(CONFIG_UNICODE) && defined(CONFIG_FS_ENCRYPTION)
 EXT4_ATTR_FEATURE(encrypted_casefold);
 #endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+EXT4_ATTR_FEATURE(blocksize_gt_pagesize);
+#endif
 
 static struct attribute *ext4_feat_attrs[] = {
 	ATTR_LIST(lazy_itable_init),
@@ -347,6 +354,9 @@ static struct attribute *ext4_feat_attrs[] = {
 	ATTR_LIST(fast_commit),
 #if IS_ENABLED(CONFIG_UNICODE) && defined(CONFIG_FS_ENCRYPTION)
 	ATTR_LIST(encrypted_casefold),
+#endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	ATTR_LIST(blocksize_gt_pagesize),
 #endif
 	NULL,
 };

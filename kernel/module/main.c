@@ -67,7 +67,7 @@
 
 /*
  * Mutex protects:
- * 1) List of modules (also safely readable with preempt_disable),
+ * 1) List of modules (also safely readable within RCU read section),
  * 2) module_use links,
  * 3) mod_tree.addr_min/mod_tree.addr_max.
  * (delete and add uses RCU list operations).
@@ -126,8 +126,36 @@ static void mod_update_bounds(struct module *mod)
 }
 
 /* Block module loading/unloading? */
-int modules_disabled;
+static int modules_disabled;
 core_param(nomodule, modules_disabled, bint, 0);
+
+static const struct ctl_table module_sysctl_table[] = {
+	{
+		.procname	= "modprobe",
+		.data		= &modprobe_path,
+		.maxlen		= KMOD_PATH_LEN,
+		.mode		= 0644,
+		.proc_handler	= proc_dostring,
+	},
+	{
+		.procname	= "modules_disabled",
+		.data		= &modules_disabled,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		/* only handle a transition from default "0" to "1" */
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ONE,
+		.extra2		= SYSCTL_ONE,
+	},
+};
+
+static int __init init_module_sysctl(void)
+{
+	register_sysctl_init("kernel", module_sysctl_table);
+	return 0;
+}
+
+subsys_initcall(init_module_sysctl);
 
 /* Waiting for a module to finish initializing? */
 static DECLARE_WAIT_QUEUE_HEAD(module_wq);
@@ -167,6 +195,30 @@ static inline void add_taint_module(struct module *mod, unsigned flag,
 {
 	add_taint(flag, lockdep_ok);
 	set_bit(flag, &mod->taints);
+}
+
+/*
+ * Like strncmp(), except s/-/_/g as per scripts/Makefile.lib:name-fix-token rule.
+ */
+static int mod_strncmp(const char *str_a, const char *str_b, size_t n)
+{
+	for (int i = 0; i < n; i++) {
+		char a = str_a[i];
+		char b = str_b[i];
+		int d;
+
+		if (a == '-') a = '_';
+		if (b == '-') b = '_';
+
+		d = a - b;
+		if (d)
+			return d;
+
+		if (!a)
+			break;
+	}
+
+	return 0;
 }
 
 /*
@@ -331,7 +383,7 @@ static bool find_exported_symbol_in_section(const struct symsearch *syms,
 
 /*
  * Find an exported symbol and return it, along with, (optional) crc and
- * (optional) module which owns it.  Needs preempt disabled or module_mutex.
+ * (optional) module which owns it. Needs RCU or module_mutex.
  */
 bool find_symbol(struct find_symbol_arg *fsa)
 {
@@ -344,8 +396,6 @@ bool find_symbol(struct find_symbol_arg *fsa)
 	};
 	struct module *mod;
 	unsigned int i;
-
-	module_assert_mutex_or_preempt();
 
 	for (i = 0; i < ARRAY_SIZE(arr); i++)
 		if (find_exported_symbol_in_section(&arr[i], NULL, fsa))
@@ -374,15 +424,13 @@ bool find_symbol(struct find_symbol_arg *fsa)
 }
 
 /*
- * Search for module by name: must hold module_mutex (or preempt disabled
- * for read-only access).
+ * Search for module by name: must hold module_mutex (or RCU for read-only
+ * access).
  */
 struct module *find_module_all(const char *name, size_t len,
 			       bool even_unformed)
 {
 	struct module *mod;
-
-	module_assert_mutex_or_preempt();
 
 	list_for_each_entry_rcu(mod, &modules, list,
 				lockdep_is_held(&module_mutex)) {
@@ -454,8 +502,7 @@ bool __is_module_percpu_address(unsigned long addr, unsigned long *can_addr)
 	struct module *mod;
 	unsigned int cpu;
 
-	preempt_disable();
-
+	guard(rcu)();
 	list_for_each_entry_rcu(mod, &modules, list) {
 		if (mod->state == MODULE_STATE_UNFORMED)
 			continue;
@@ -472,13 +519,10 @@ bool __is_module_percpu_address(unsigned long addr, unsigned long *can_addr)
 						per_cpu_ptr(mod->percpu,
 							    get_boot_cpu_id());
 				}
-				preempt_enable();
 				return true;
 			}
 		}
 	}
-
-	preempt_enable();
 	return false;
 }
 
@@ -564,7 +608,7 @@ MODINFO_ATTR(version);
 MODINFO_ATTR(srcversion);
 
 static struct {
-	char name[MODULE_NAME_LEN + 1];
+	char name[MODULE_NAME_LEN];
 	char taints[MODULE_FLAGS_BUF_SIZE];
 } last_unloaded_module;
 
@@ -735,14 +779,16 @@ SYSCALL_DEFINE2(delete_module, const char __user *, name_user,
 	struct module *mod;
 	char name[MODULE_NAME_LEN];
 	char buf[MODULE_FLAGS_BUF_SIZE];
-	int ret, forced = 0;
+	int ret, len, forced = 0;
 
 	if (!capable(CAP_SYS_MODULE) || modules_disabled)
 		return -EPERM;
 
-	if (strncpy_from_user(name, name_user, MODULE_NAME_LEN-1) < 0)
-		return -EFAULT;
-	name[MODULE_NAME_LEN-1] = '\0';
+	len = strncpy_from_user(name, name_user, MODULE_NAME_LEN);
+	if (len == 0 || len == MODULE_NAME_LEN)
+		return -ENOENT;
+	if (len < 0)
+		return len;
 
 	audit_log_kern_module(name);
 
@@ -795,8 +841,8 @@ SYSCALL_DEFINE2(delete_module, const char __user *, name_user,
 	async_synchronize_full();
 
 	/* Store the name and taints of the last unloaded module for diagnostic purposes */
-	strscpy(last_unloaded_module.name, mod->name, sizeof(last_unloaded_module.name));
-	strscpy(last_unloaded_module.taints, module_flags(mod, buf, false), sizeof(last_unloaded_module.taints));
+	strscpy(last_unloaded_module.name, mod->name);
+	strscpy(last_unloaded_module.taints, module_flags(mod, buf, false));
 
 	free_module(mod);
 	/* someone could wait for the module in add_unformed_module() */
@@ -814,10 +860,9 @@ void __symbol_put(const char *symbol)
 		.gplok	= true,
 	};
 
-	preempt_disable();
+	guard(rcu)();
 	BUG_ON(!find_symbol(&fsa));
 	module_put(fsa.owner);
-	preempt_enable();
 }
 EXPORT_SYMBOL(__symbol_put);
 
@@ -832,13 +877,12 @@ void symbol_put_addr(void *addr)
 
 	/*
 	 * Even though we hold a reference on the module; we still need to
-	 * disable preemption in order to safely traverse the data structure.
+	 * RCU read section in order to safely traverse the data structure.
 	 */
-	preempt_disable();
+	guard(rcu)();
 	modaddr = __module_text_address(a);
 	BUG_ON(!modaddr);
 	module_put(modaddr);
-	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(symbol_put_addr);
 
@@ -910,7 +954,7 @@ size_t module_flags_taint(unsigned long taints, char *buf)
 	int i;
 
 	for (i = 0; i < TAINT_FLAGS_COUNT; i++) {
-		if (taint_flags[i].module && test_bit(i, &taints))
+		if (test_bit(i, &taints))
 			buf[l++] = taint_flags[i].c_true;
 	}
 
@@ -1093,6 +1137,46 @@ static char *get_modinfo(const struct load_info *info, const char *tag)
 	return get_next_modinfo(info, tag, NULL);
 }
 
+/**
+ * verify_module_namespace() - does @modname have access to this symbol's @namespace
+ * @namespace: export symbol namespace
+ * @modname: module name
+ *
+ * If @namespace is prefixed with "module:" to indicate it is a module namespace
+ * then test if @modname matches any of the comma separated patterns.
+ *
+ * The patterns only support tail-glob.
+ */
+static bool verify_module_namespace(const char *namespace, const char *modname)
+{
+	size_t len, modlen = strlen(modname);
+	const char *prefix = "module:";
+	const char *sep;
+	bool glob;
+
+	if (!strstarts(namespace, prefix))
+		return false;
+
+	for (namespace += strlen(prefix); *namespace; namespace = sep) {
+		sep = strchrnul(namespace, ',');
+		len = sep - namespace;
+
+		glob = false;
+		if (sep[-1] == '*') {
+			len--;
+			glob = true;
+		}
+
+		if (*sep)
+			sep++;
+
+		if (mod_strncmp(namespace, modname, len) == 0 && (glob || len == modlen))
+			return true;
+	}
+
+	return false;
+}
+
 static int verify_namespace_is_imported(const struct load_info *info,
 					const struct kernel_symbol *sym,
 					struct module *mod)
@@ -1102,6 +1186,10 @@ static int verify_namespace_is_imported(const struct load_info *info,
 
 	namespace = kernel_symbol_namespace(sym);
 	if (namespace && namespace[0]) {
+
+		if (verify_module_namespace(namespace, mod->name))
+			return 0;
+
 		for_each_modinfo_entry(imported_namespace, info, "import_ns") {
 			if (strcmp(namespace, imported_namespace) == 0)
 				return 0;
@@ -1189,7 +1277,7 @@ static const struct kernel_symbol *resolve_symbol(struct module *mod,
 
 getname:
 	/* We must make copy under the lock if we failed to get ref. */
-	strncpy(ownername, module_name(fsa.owner), MODULE_NAME_LEN);
+	strscpy(ownername, module_name(fsa.owner), MODULE_NAME_LEN);
 unlock:
 	mutex_unlock(&module_mutex);
 	return fsa.sym;
@@ -1221,18 +1309,6 @@ void __weak module_arch_freeing_init(struct module *mod)
 {
 }
 
-void *__module_writable_address(struct module *mod, void *loc)
-{
-	for_class_mod_mem_type(type, text) {
-		struct module_memory *mem = &mod->mem[type];
-
-		if (loc >= mem->base && loc < mem->base + mem->size)
-			return loc + (mem->rw_copy - mem->base);
-	}
-
-	return loc;
-}
-
 static int module_memory_alloc(struct module *mod, enum mod_mem_type type)
 {
 	unsigned int size = PAGE_ALIGN(mod->mem[type].size);
@@ -1246,26 +1322,11 @@ static int module_memory_alloc(struct module *mod, enum mod_mem_type type)
 	else
 		execmem_type = EXECMEM_MODULE_TEXT;
 
-	ptr = execmem_alloc(execmem_type, size);
+	ptr = execmem_alloc_rw(execmem_type, size);
 	if (!ptr)
 		return -ENOMEM;
 
-	mod->mem[type].base = ptr;
-
-	if (execmem_is_rox(execmem_type)) {
-		ptr = vzalloc(size);
-
-		if (!ptr) {
-			execmem_free(mod->mem[type].base);
-			return -ENOMEM;
-		}
-
-		mod->mem[type].rw_copy = ptr;
-		mod->mem[type].is_rox = true;
-	} else {
-		mod->mem[type].rw_copy = mod->mem[type].base;
-		memset(mod->mem[type].base, 0, size);
-	}
+	mod->mem[type].is_rox = execmem_is_rox(execmem_type);
 
 	/*
 	 * The pointer to these blocks of memory are stored on the module
@@ -1278,17 +1339,28 @@ static int module_memory_alloc(struct module *mod, enum mod_mem_type type)
 	 * *do* eventually get freed, but let's just keep things simple
 	 * and avoid *any* false positives.
 	 */
-	kmemleak_not_leak(ptr);
+	if (!mod->mem[type].is_rox)
+		kmemleak_not_leak(ptr);
+
+	memset(ptr, 0, size);
+	mod->mem[type].base = ptr;
 
 	return 0;
+}
+
+static void module_memory_restore_rox(struct module *mod)
+{
+	for_class_mod_mem_type(type, text) {
+		struct module_memory *mem = &mod->mem[type];
+
+		if (mem->is_rox)
+			execmem_restore_rox(mem->base, mem->size);
+	}
 }
 
 static void module_memory_free(struct module *mod, enum mod_mem_type type)
 {
 	struct module_memory *mem = &mod->mem[type];
-
-	if (mem->is_rox)
-		vfree(mem->rw_copy);
 
 	execmem_free(mem->base);
 }
@@ -1348,7 +1420,7 @@ static void free_module(struct module *mod)
 	mod_tree_remove(mod);
 	/* Remove this module from bug list, this uses list_del_rcu */
 	module_bug_cleanup(mod);
-	/* Wait for RCU-sched synchronizing before releasing mod->list and buglist. */
+	/* Wait for RCU synchronizing before releasing mod->list and buglist. */
 	synchronize_rcu();
 	if (try_add_tainted_module(mod))
 		pr_err("%s: adding tainted module to the unloaded tainted modules list failed.\n",
@@ -1371,21 +1443,18 @@ void *__symbol_get(const char *symbol)
 		.warn	= true,
 	};
 
-	preempt_disable();
-	if (!find_symbol(&fsa))
-		goto fail;
-	if (fsa.license != GPL_ONLY) {
-		pr_warn("failing symbol_get of non-GPLONLY symbol %s.\n",
-			symbol);
-		goto fail;
+	scoped_guard(rcu) {
+		if (!find_symbol(&fsa))
+			return NULL;
+		if (fsa.license != GPL_ONLY) {
+			pr_warn("failing symbol_get of non-GPLONLY symbol %s.\n",
+				symbol);
+			return NULL;
+		}
+		if (strong_try_module_get(fsa.owner))
+			return NULL;
 	}
-	if (strong_try_module_get(fsa.owner))
-		goto fail;
-	preempt_enable();
 	return (void *)kernel_symbol_value(fsa.sym);
-fail:
-	preempt_enable();
-	return NULL;
 }
 EXPORT_SYMBOL_GPL(__symbol_get);
 
@@ -1525,8 +1594,14 @@ static int apply_relocations(struct module *mod, const struct load_info *info)
 		if (infosec >= info->hdr->e_shnum)
 			continue;
 
-		/* Don't bother with non-allocated sections */
-		if (!(info->sechdrs[infosec].sh_flags & SHF_ALLOC))
+		/*
+		 * Don't bother with non-allocated sections.
+		 * An exception is the percpu section, which has separate allocations
+		 * for individual CPUs. We relocate the percpu section in the initial
+		 * ELF template and subsequently copy it to the per-CPU destinations.
+		 */
+		if (!(info->sechdrs[infosec].sh_flags & SHF_ALLOC) &&
+		    (!infosec || infosec != info->index.pcpu))
 			continue;
 
 		if (info->sechdrs[i].sh_flags & SHF_RELA_LIVEPATCH)
@@ -1582,12 +1657,11 @@ static void __layout_sections(struct module *mod, struct load_info *info, bool i
 {
 	unsigned int m, i;
 
+	/*
+	 * { Mask of required section header flags,
+	 *   Mask of excluded section header flags }
+	 */
 	static const unsigned long masks[][2] = {
-		/*
-		 * NOTE: all executable code must be the first section
-		 * in this array; otherwise modify the text_size
-		 * finder in the two loops below
-		 */
 		{ SHF_EXECINSTR | SHF_ALLOC, ARCH_SHF_SMALL },
 		{ SHF_ALLOC, SHF_WRITE | ARCH_SHF_SMALL },
 		{ SHF_RO_AFTER_INIT | SHF_ALLOC, ARCH_SHF_SMALL },
@@ -1679,15 +1753,30 @@ static void module_license_taint_check(struct module *mod, const char *license)
 	}
 }
 
-static void setup_modinfo(struct module *mod, struct load_info *info)
+static int setup_modinfo(struct module *mod, struct load_info *info)
 {
 	const struct module_attribute *attr;
+	char *imported_namespace;
 	int i;
 
 	for (i = 0; (attr = modinfo_attrs[i]); i++) {
 		if (attr->setup)
 			attr->setup(mod, get_modinfo(info, attr->attr.name));
 	}
+
+	for_each_modinfo_entry(imported_namespace, info, "import_ns") {
+		/*
+		 * 'module:' prefixed namespaces are implicit, disallow
+		 * explicit imports.
+		 */
+		if (strstarts(imported_namespace, "module:")) {
+			pr_err("%s: module tries to import module namespace: %s\n",
+			       mod->name, imported_namespace);
+			return -EPERM;
+		}
+	}
+
+	return 0;
 }
 
 static void free_modinfo(struct module *mod)
@@ -2577,7 +2666,7 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 					 sizeof(*mod->trace_bprintk_fmt_start),
 					 &mod->num_trace_bprintk_fmt);
 #endif
-#ifdef CONFIG_FTRACE_MCOUNT_RECORD
+#ifdef CONFIG_DYNAMIC_FTRACE
 	/* sechdrs[0].sh_size is always zero */
 	mod->ftrace_callsites = section_objs(info, FTRACE_CALLSITE_SECTION,
 					     sizeof(*mod->ftrace_callsites),
@@ -2634,15 +2723,13 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 
 static int move_module(struct module *mod, struct load_info *info)
 {
-	int i;
-	enum mod_mem_type t = 0;
-	int ret = -ENOMEM;
+	int i, ret;
+	enum mod_mem_type t = MOD_MEM_NUM_TYPES;
 	bool codetag_section_found = false;
 
 	for_each_mod_mem_type(type) {
 		if (!mod->mem[type].size) {
 			mod->mem[type].base = NULL;
-			mod->mem[type].rw_copy = NULL;
 			continue;
 		}
 
@@ -2659,7 +2746,6 @@ static int move_module(struct module *mod, struct load_info *info)
 		void *dest;
 		Elf_Shdr *shdr = &info->sechdrs[i];
 		const char *sname;
-		unsigned long addr;
 
 		if (!(shdr->sh_flags & SHF_ALLOC))
 			continue;
@@ -2680,14 +2766,12 @@ static int move_module(struct module *mod, struct load_info *info)
 				ret = PTR_ERR(dest);
 				goto out_err;
 			}
-			addr = (unsigned long)dest;
 			codetag_section_found = true;
 		} else {
 			enum mod_mem_type type = shdr->sh_entsize >> SH_ENTSIZE_TYPE_SHIFT;
 			unsigned long offset = shdr->sh_entsize & SH_ENTSIZE_OFFSET_MASK;
 
-			addr = (unsigned long)mod->mem[type].base + offset;
-			dest = mod->mem[type].rw_copy + offset;
+			dest = mod->mem[type].base + offset;
 		}
 
 		if (shdr->sh_type != SHT_NOBITS) {
@@ -2710,14 +2794,15 @@ static int move_module(struct module *mod, struct load_info *info)
 		 * users of info can keep taking advantage and using the newly
 		 * minted official memory area.
 		 */
-		shdr->sh_addr = addr;
+		shdr->sh_addr = (unsigned long)dest;
 		pr_debug("\t0x%lx 0x%.8lx %s\n", (long)shdr->sh_addr,
 			 (long)shdr->sh_size, info->secstrings + shdr->sh_name);
 	}
 
 	return 0;
 out_err:
-	for (t--; t >= 0; t--)
+	module_memory_restore_rox(mod);
+	while (t--)
 		module_memory_free(mod, t);
 	if (codetag_section_found)
 		codetag_free_module_sections(mod);
@@ -2791,7 +2876,6 @@ core_param(module_blacklist, module_blacklist, charp, 0400);
 static struct module *layout_and_allocate(struct load_info *info, int flags)
 {
 	struct module *mod;
-	unsigned int ndx;
 	int err;
 
 	/* Allow arches to frob section contents and sizes.  */
@@ -2809,22 +2893,11 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 	info->sechdrs[info->index.pcpu].sh_flags &= ~(unsigned long)SHF_ALLOC;
 
 	/*
-	 * Mark ro_after_init section with SHF_RO_AFTER_INIT so that
-	 * layout_sections() can put it in the right place.
+	 * Mark relevant sections as SHF_RO_AFTER_INIT so layout_sections() can
+	 * put them in the right place.
 	 * Note: ro_after_init sections also have SHF_{WRITE,ALLOC} set.
 	 */
-	ndx = find_sec(info, ".data..ro_after_init");
-	if (ndx)
-		info->sechdrs[ndx].sh_flags |= SHF_RO_AFTER_INIT;
-	/*
-	 * Mark the __jump_table section as ro_after_init as well: these data
-	 * structures are never modified, with the exception of entries that
-	 * refer to code in the __init section, which are annotated as such
-	 * at module load time.
-	 */
-	ndx = find_sec(info, "__jump_table");
-	if (ndx)
-		info->sechdrs[ndx].sh_flags |= SHF_RO_AFTER_INIT;
+	module_mark_ro_after_init(info->hdr, info->sechdrs, info->secstrings);
 
 	/*
 	 * Determine total sizes, and put offsets in sh_entsize.  For now
@@ -2852,6 +2925,7 @@ static void module_deallocate(struct module *mod, struct load_info *info)
 {
 	percpu_modfree(mod);
 	module_arch_freeing_init(mod);
+	codetag_free_module_sections(mod);
 
 	free_mod_mem(mod);
 }
@@ -2863,17 +2937,8 @@ int __weak module_finalize(const Elf_Ehdr *hdr,
 	return 0;
 }
 
-int __weak module_post_finalize(const Elf_Ehdr *hdr,
-				const Elf_Shdr *sechdrs,
-				struct module *me)
-{
-	return 0;
-}
-
 static int post_relocation(struct module *mod, const struct load_info *info)
 {
-	int ret;
-
 	/* Sort exception table now relocations are done. */
 	sort_extable(mod->extable, mod->extable + mod->num_exentries);
 
@@ -2885,24 +2950,7 @@ static int post_relocation(struct module *mod, const struct load_info *info)
 	add_kallsyms(mod, info);
 
 	/* Arch-specific module finalizing. */
-	ret = module_finalize(info->hdr, info->sechdrs, mod);
-	if (ret)
-		return ret;
-
-	for_each_mod_mem_type(type) {
-		struct module_memory *mem = &mod->mem[type];
-
-		if (mem->is_rox) {
-			if (!execmem_update_copy(mem->base, mem->rw_copy,
-						 mem->size))
-				return -ENOMEM;
-
-			vfree(mem->rw_copy);
-			mem->rw_copy = NULL;
-		}
-	}
-
-	return module_post_finalize(info->hdr, info->sechdrs, mod);
+	return module_finalize(info->hdr, info->sechdrs, mod);
 }
 
 /* Call module constructors. */
@@ -3049,7 +3097,7 @@ static noinline int do_init_module(struct module *mod)
 #endif
 	/*
 	 * We want to free module_init, but be aware that kallsyms may be
-	 * walking this with preempt disabled.  In all the failure paths, we
+	 * walking this within an RCU read section. In all the failure paths, we
 	 * call synchronize_rcu(), but we don't want to slow down the success
 	 * path. execmem_free() cannot be called in an interrupt, so do the
 	 * work and call synchronize_rcu() in a work queue.
@@ -3346,7 +3394,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 
 	module_allocated = true;
 
-	audit_log_kern_module(mod->name);
+	audit_log_kern_module(info->name);
 
 	/* Reserve our place in the list. */
 	err = add_unformed_module(mod);
@@ -3384,7 +3432,9 @@ static int load_module(struct load_info *info, const char __user *uargs,
 		goto free_unload;
 
 	/* Set up MODINFO_ATTR fields */
-	setup_modinfo(mod, info);
+	err = setup_modinfo(mod, info);
+	if (err)
+		goto free_modinfo;
 
 	/* Fix up syms, so that st_value is a pointer to location. */
 	err = simplify_symbols(mod, info);
@@ -3447,10 +3497,11 @@ static int load_module(struct load_info *info, const char __user *uargs,
 			goto sysfs_cleanup;
 	}
 
+	if (codetag_load_module(mod))
+		goto sysfs_cleanup;
+
 	/* Get rid of temporary copy. */
 	free_copy(info, flags);
-
-	codetag_load_module(mod);
 
 	/* Done! */
 	trace_module_load(mod);
@@ -3499,6 +3550,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 				       mod->mem[type].size);
 	}
 
+	module_memory_restore_rox(mod);
 	module_deallocate(mod, info);
  free_copy:
 	/*
@@ -3506,8 +3558,10 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	 * failures once the proper module was allocated and
 	 * before that.
 	 */
-	if (!module_allocated)
+	if (!module_allocated) {
+		audit_log_kern_module(info->name ? info->name : "?");
 		mod_stat_bump_becoming(info, flags);
+	}
 	free_copy(info, flags);
 	return err;
 }
@@ -3621,22 +3675,33 @@ static int idempotent_wait_for_completion(struct idempotent *u)
 
 static int init_module_from_file(struct file *f, const char __user * uargs, int flags)
 {
+	bool compressed = !!(flags & MODULE_INIT_COMPRESSED_FILE);
 	struct load_info info = { };
 	void *buf = NULL;
 	int len;
+	int err;
 
-	len = kernel_read_file(f, 0, &buf, INT_MAX, NULL, READING_MODULE);
+	len = kernel_read_file(f, 0, &buf, INT_MAX, NULL,
+			       compressed ? READING_MODULE_COMPRESSED :
+					    READING_MODULE);
 	if (len < 0) {
 		mod_stat_inc(&failed_kreads);
 		return len;
 	}
 
-	if (flags & MODULE_INIT_COMPRESSED_FILE) {
-		int err = module_decompress(&info, buf, len);
+	if (compressed) {
+		err = module_decompress(&info, buf, len);
 		vfree(buf); /* compressed data is no longer needed */
 		if (err) {
 			mod_stat_inc(&failed_decompress);
 			mod_stat_add_long(len, &invalid_decompress_bytes);
+			return err;
+		}
+		err = security_kernel_post_read_file(f, (char *)info.hdr, info.len,
+						     READING_MODULE);
+		if (err) {
+			mod_stat_inc(&failed_kreads);
+			free_copy(&info, flags);
 			return err;
 		}
 	} else {
@@ -3715,28 +3780,23 @@ out:
 /* Given an address, look for it in the module exception tables. */
 const struct exception_table_entry *search_module_extables(unsigned long addr)
 {
-	const struct exception_table_entry *e = NULL;
 	struct module *mod;
 
-	preempt_disable();
+	guard(rcu)();
 	mod = __module_address(addr);
 	if (!mod)
-		goto out;
+		return NULL;
 
 	if (!mod->num_exentries)
-		goto out;
-
-	e = search_extable(mod->extable,
-			   mod->num_exentries,
-			   addr);
-out:
-	preempt_enable();
-
+		return NULL;
 	/*
-	 * Now, if we found one, we are running inside it now, hence
-	 * we cannot unload the module, hence no refcnt needed.
+	 * The address passed here belongs to a module that is currently
+	 * invoked (we are running inside it). Therefore its module::refcnt
+	 * needs already be >0 to ensure that it is not removed at this stage.
+	 * All other user need to invoke this function within a RCU read
+	 * section.
 	 */
-	return e;
+	return search_extable(mod->extable, mod->num_exentries, addr);
 }
 
 /**
@@ -3748,20 +3808,15 @@ out:
  */
 bool is_module_address(unsigned long addr)
 {
-	bool ret;
-
-	preempt_disable();
-	ret = __module_address(addr) != NULL;
-	preempt_enable();
-
-	return ret;
+	guard(rcu)();
+	return __module_address(addr) != NULL;
 }
 
 /**
  * __module_address() - get the module which contains an address.
  * @addr: the address.
  *
- * Must be called with preempt disabled or module mutex held so that
+ * Must be called within RCU read section or module mutex held so that
  * module doesn't get freed during this.
  */
 struct module *__module_address(unsigned long addr)
@@ -3779,8 +3834,6 @@ struct module *__module_address(unsigned long addr)
 	return NULL;
 
 lookup:
-	module_assert_mutex_or_preempt();
-
 	mod = mod_find(addr, &mod_tree);
 	if (mod) {
 		BUG_ON(!within_module(addr, mod));
@@ -3800,20 +3853,28 @@ lookup:
  */
 bool is_module_text_address(unsigned long addr)
 {
-	bool ret;
+	guard(rcu)();
+	return __module_text_address(addr) != NULL;
+}
 
-	preempt_disable();
-	ret = __module_text_address(addr) != NULL;
-	preempt_enable();
+void module_for_each_mod(int(*func)(struct module *mod, void *data), void *data)
+{
+	struct module *mod;
 
-	return ret;
+	guard(rcu)();
+	list_for_each_entry_rcu(mod, &modules, list) {
+		if (mod->state == MODULE_STATE_UNFORMED)
+			continue;
+		if (func(mod, data))
+			break;
+	}
 }
 
 /**
  * __module_text_address() - get the module whose code contains an address.
  * @addr: the address.
  *
- * Must be called with preempt disabled or module mutex held so that
+ * Must be called within RCU read section or module mutex held so that
  * module doesn't get freed during this.
  */
 struct module *__module_text_address(unsigned long addr)
@@ -3836,7 +3897,7 @@ void print_modules(void)
 
 	printk(KERN_DEFAULT "Modules linked in:");
 	/* Most callers should already have preempt disabled, but make sure */
-	preempt_disable();
+	guard(rcu)();
 	list_for_each_entry_rcu(mod, &modules, list) {
 		if (mod->state == MODULE_STATE_UNFORMED)
 			continue;
@@ -3844,7 +3905,6 @@ void print_modules(void)
 	}
 
 	print_unloaded_tainted_modules();
-	preempt_enable();
 	if (last_unloaded_module.name[0])
 		pr_cont(" [last unloaded: %s%s]", last_unloaded_module.name,
 			last_unloaded_module.taints);

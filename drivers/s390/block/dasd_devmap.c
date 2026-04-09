@@ -13,11 +13,13 @@
  *
  */
 
+#include <linux/export.h>
 #include <linux/ctype.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 
+#include <asm/machine.h>
 #include <asm/debug.h>
 #include <linux/uaccess.h>
 #include <asm/ipl.h>
@@ -234,7 +236,7 @@ static int __init dasd_parse_keyword(char *keyword)
 		return 0;
         }
 	if (strncmp("nopav", keyword, length) == 0) {
-		if (MACHINE_IS_VM)
+		if (machine_is_vm())
 			pr_info("'nopav' is not supported on z/VM\n");
 		else {
 			dasd_nopav = 1;
@@ -353,7 +355,8 @@ static int __init dasd_parse_range(const char *range)
 	/* each device in dasd= parameter should be set initially online */
 	features |= DASD_FEATURE_INITIAL_ONLINE;
 	while (from <= to) {
-		sprintf(bus_id, "%01x.%01x.%04x", from_id0, from_id1, from++);
+		scnprintf(bus_id, sizeof(bus_id),
+			  "%01x.%01x.%04x", from_id0, from_id1, from++);
 		devmap = dasd_add_busid(bus_id, features);
 		if (IS_ERR(devmap)) {
 			rc = PTR_ERR(devmap);

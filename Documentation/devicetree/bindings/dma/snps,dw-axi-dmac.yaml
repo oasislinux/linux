@@ -42,6 +42,9 @@ properties:
     minItems: 1
     maxItems: 8
 
+  iommus:
+    maxItems: 1
+
   clocks:
     items:
       - description: Bus Clock
@@ -58,6 +61,8 @@ properties:
   dma-channels:
     minimum: 1
     maximum: 8
+
+  dma-noncoherent: true
 
   resets:
     minItems: 1

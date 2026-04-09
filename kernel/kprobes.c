@@ -135,8 +135,12 @@ struct kprobe_insn_cache kprobe_insn_slots = {
 static int collect_garbage_slots(struct kprobe_insn_cache *c);
 
 /**
- * __get_insn_slot() - Find a slot on an executable page for an instruction.
- * We allocate an executable page if there's no room on existing ones.
+ * __get_insn_slot - Find a slot on an executable page for an instruction.
+ * @c: Pointer to kprobe instruction cache
+ *
+ * Description: Locates available slot on existing executable pages,
+ *              allocates an executable page if there's no room on existing ones.
+ * Return: Pointer to instruction slot on success, NULL on failure.
  */
 kprobe_opcode_t *__get_insn_slot(struct kprobe_insn_cache *c)
 {
@@ -1547,7 +1551,7 @@ static int check_kprobe_address_safe(struct kprobe *p,
 	/* Ensure the address is in a text area, and find a module if exists. */
 	*probed_mod = NULL;
 	if (!core_kernel_text((unsigned long) p->addr)) {
-		guard(preempt)();
+		guard(rcu)();
 		*probed_mod = __module_text_address((unsigned long) p->addr);
 		if (!(*probed_mod))
 			return -EINVAL;

@@ -3,12 +3,16 @@
  * Copyright © 2021 Intel Corporation
  */
 
+#include <drm/drm_print.h>
+
 #include "gem/i915_gem_domain.h"
 #include "gem/i915_gem_internal.h"
 #include "gem/i915_gem_lmem.h"
 #include "gt/gen8_ppgtt.h"
 
 #include "i915_drv.h"
+#include "intel_display_core.h"
+#include "intel_display_rpm.h"
 #include "intel_display_types.h"
 #include "intel_dpt.h"
 #include "intel_fb.h"
@@ -30,8 +34,6 @@ i915_vm_to_dpt(struct i915_address_space *vm)
 	drm_WARN_ON(&vm->i915->drm, !i915_is_dpt(vm));
 	return container_of(vm, struct i915_dpt, vm);
 }
-
-#define dpt_total_entries(dpt) ((dpt)->vm.total >> PAGE_SHIFT)
 
 static void gen8_set_pte(void __iomem *addr, gen8_pte_t pte)
 {
@@ -125,8 +127,9 @@ struct i915_vma *intel_dpt_pin_to_ggtt(struct i915_address_space *vm,
 				       unsigned int alignment)
 {
 	struct drm_i915_private *i915 = vm->i915;
+	struct intel_display *display = i915->display;
 	struct i915_dpt *dpt = i915_vm_to_dpt(vm);
-	intel_wakeref_t wakeref;
+	struct ref_tracker *wakeref;
 	struct i915_vma *vma;
 	void __iomem *iomem;
 	struct i915_gem_ww_ctx ww;
@@ -136,8 +139,8 @@ struct i915_vma *intel_dpt_pin_to_ggtt(struct i915_address_space *vm,
 	if (i915_gem_object_is_stolen(dpt->obj))
 		pin_flags |= PIN_MAPPABLE;
 
-	wakeref = intel_runtime_pm_get(&i915->runtime_pm);
-	atomic_inc(&i915->gpu_error.pending_fb_pin);
+	wakeref = intel_display_rpm_get(display);
+	atomic_inc(&display->restore.pending_fb_pin);
 
 	for_i915_gem_ww(&ww, err, true) {
 		err = i915_gem_object_lock(dpt->obj, &ww);
@@ -167,8 +170,8 @@ struct i915_vma *intel_dpt_pin_to_ggtt(struct i915_address_space *vm,
 
 	dpt->obj->mm.dirty = true;
 
-	atomic_dec(&i915->gpu_error.pending_fb_pin);
-	intel_runtime_pm_put(&i915->runtime_pm, wakeref);
+	atomic_dec(&display->restore.pending_fb_pin);
+	intel_display_rpm_put(display, wakeref);
 
 	return err ? ERR_PTR(err) : vma;
 }
@@ -183,7 +186,7 @@ void intel_dpt_unpin_from_ggtt(struct i915_address_space *vm)
 
 /**
  * intel_dpt_resume - restore the memory mapping for all DPT FBs during system resume
- * @i915: device instance
+ * @display: display device instance
  *
  * Restore the memory mapping during system resume for all framebuffers which
  * are mapped to HW via a GGTT->DPT page table. The content of these page
@@ -193,26 +196,26 @@ void intel_dpt_unpin_from_ggtt(struct i915_address_space *vm)
  * This function must be called after the mappings in GGTT have been restored calling
  * i915_ggtt_resume().
  */
-void intel_dpt_resume(struct drm_i915_private *i915)
+void intel_dpt_resume(struct intel_display *display)
 {
 	struct drm_framebuffer *drm_fb;
 
-	if (!HAS_DISPLAY(i915))
+	if (!HAS_DISPLAY(display))
 		return;
 
-	mutex_lock(&i915->drm.mode_config.fb_lock);
-	drm_for_each_fb(drm_fb, &i915->drm) {
+	mutex_lock(&display->drm->mode_config.fb_lock);
+	drm_for_each_fb(drm_fb, display->drm) {
 		struct intel_framebuffer *fb = to_intel_framebuffer(drm_fb);
 
 		if (fb->dpt_vm)
 			i915_ggtt_resume_vm(fb->dpt_vm, true);
 	}
-	mutex_unlock(&i915->drm.mode_config.fb_lock);
+	mutex_unlock(&display->drm->mode_config.fb_lock);
 }
 
 /**
  * intel_dpt_suspend - suspend the memory mapping for all DPT FBs during system suspend
- * @i915: device instance
+ * @display: display device instance
  *
  * Suspend the memory mapping during system suspend for all framebuffers which
  * are mapped to HW via a GGTT->DPT page table.
@@ -220,23 +223,23 @@ void intel_dpt_resume(struct drm_i915_private *i915)
  * This function must be called before the mappings in GGTT are suspended calling
  * i915_ggtt_suspend().
  */
-void intel_dpt_suspend(struct drm_i915_private *i915)
+void intel_dpt_suspend(struct intel_display *display)
 {
 	struct drm_framebuffer *drm_fb;
 
-	if (!HAS_DISPLAY(i915))
+	if (!HAS_DISPLAY(display))
 		return;
 
-	mutex_lock(&i915->drm.mode_config.fb_lock);
+	mutex_lock(&display->drm->mode_config.fb_lock);
 
-	drm_for_each_fb(drm_fb, &i915->drm) {
+	drm_for_each_fb(drm_fb, display->drm) {
 		struct intel_framebuffer *fb = to_intel_framebuffer(drm_fb);
 
 		if (fb->dpt_vm)
 			i915_ggtt_suspend_vm(fb->dpt_vm, true);
 	}
 
-	mutex_unlock(&i915->drm.mode_config.fb_lock);
+	mutex_unlock(&display->drm->mode_config.fb_lock);
 }
 
 struct i915_address_space *
@@ -319,5 +322,5 @@ void intel_dpt_destroy(struct i915_address_space *vm)
 
 u64 intel_dpt_offset(struct i915_vma *dpt_vma)
 {
-	return dpt_vma->node.start;
+	return i915_vma_offset(dpt_vma);
 }

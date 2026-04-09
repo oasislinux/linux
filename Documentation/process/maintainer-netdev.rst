@@ -311,6 +311,14 @@ to the mailing list, e.g.::
 Posting as one thread is discouraged because it confuses patchwork
 (as of patchwork 2.2.2).
 
+Co-posting selftests
+~~~~~~~~~~~~~~~~~~~~
+
+Selftests should be part of the same series as the code changes.
+Specifically for fixes both code change and related test should go into
+the same tree (the tests may lack a Fixes tag, which is expected).
+Mixing code changes and test changes in a single commit is discouraged.
+
 Preparing changes
 -----------------
 
@@ -354,6 +362,18 @@ chunk of time. A small series can be reviewed in a short time, so Maintainers
 just do it. As a result, a sequence of smaller series gets merged quicker and
 with better review coverage. Re-posting large series also increases the mailing
 list traffic.
+
+Limit patches outstanding on mailing list
+-----------------------------------------
+
+Avoid having more than 15 patches, across all series, outstanding for
+review on the mailing list for a single tree. In other words, a maximum of
+15 patches under review on net, and a maximum of 15 patches under review on
+net-next.
+
+This limit is intended to focus developer effort on testing patches before
+upstream review. Aiding the quality of upstream submissions, and easing the
+load on reviewers.
 
 .. _rcs:
 
@@ -399,7 +419,7 @@ Clean-up patches
 Netdev discourages patches which perform simple clean-ups, which are not in
 the context of other work. For example:
 
-* Addressing ``checkpatch.pl`` warnings
+* Addressing ``checkpatch.pl``, and other trivial coding style warnings
 * Addressing :ref:`Local variable ordering<rcs>` issues
 * Conversions to device-managed APIs (``devm_`` helpers)
 

@@ -10,6 +10,8 @@
 
 #include "xe_ggtt_types.h"
 
+#include <linux/refcount.h>
+
 /* We don't want these from i915_drm.h in case of Xe */
 #undef I915_TILING_X
 #undef I915_TILING_Y
@@ -19,11 +21,10 @@
 struct xe_bo;
 
 struct i915_vma {
+	refcount_t ref;
 	struct xe_bo *bo, *dpt;
 	struct xe_ggtt_node *node;
 };
-
-#define i915_ggtt_clear_scanout(bo) do { } while (0)
 
 #define i915_vma_fence_id(vma) -1
 

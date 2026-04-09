@@ -893,7 +893,7 @@ static int bcm2835_dma_suspend_late(struct device *dev)
 }
 
 static const struct dev_pm_ops bcm2835_dma_pm_ops = {
-	SET_LATE_SYSTEM_SLEEP_PM_OPS(bcm2835_dma_suspend_late, NULL)
+	LATE_SYSTEM_SLEEP_PM_OPS(bcm2835_dma_suspend_late, NULL)
 };
 
 static int bcm2835_dma_probe(struct platform_device *pdev)
@@ -1060,7 +1060,6 @@ static struct platform_driver bcm2835_dma_driver = {
 
 module_platform_driver(bcm2835_dma_driver);
 
-MODULE_ALIAS("platform:bcm2835-dma");
 MODULE_DESCRIPTION("BCM2835 DMA engine driver");
 MODULE_AUTHOR("Florian Meier <florian.meier@koalo.de>");
 MODULE_LICENSE("GPL");

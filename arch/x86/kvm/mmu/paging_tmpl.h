@@ -402,7 +402,7 @@ retry_walk:
 			goto error;
 
 		ptep_user = (pt_element_t __user *)((void *)host_addr + offset);
-		if (unlikely(__get_user(pte, ptep_user)))
+		if (unlikely(get_user(pte, ptep_user)))
 			goto error;
 		walker->ptep_user[walker->level - 1] = ptep_user;
 
@@ -510,8 +510,7 @@ error:
 		 * Note, pte_access holds the raw RWX bits from the EPTE, not
 		 * ACC_*_MASK flags!
 		 */
-		walker->fault.exit_qualification |= (pte_access & VMX_EPT_RWX_MASK) <<
-						     EPT_VIOLATION_RWX_SHIFT;
+		walker->fault.exit_qualification |= EPT_VIOLATION_RWX_TO_PROT(pte_access);
 	}
 #endif
 	walker->fault.address = addr;
@@ -805,9 +804,12 @@ static int FNAME(page_fault)(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault
 	if (r != RET_PF_CONTINUE)
 		return r;
 
+#if PTTYPE != PTTYPE_EPT
 	/*
-	 * Do not change pte_access if the pfn is a mmio page, otherwise
-	 * we will cache the incorrect access into mmio spte.
+	 * Treat the guest PTE protections as writable, supervisor-only if this
+	 * is a supervisor write fault and CR0.WP=0 (supervisor accesses ignore
+	 * PTE.W if CR0.WP=0).  Don't change the access type for emulated MMIO,
+	 * otherwise KVM will cache incorrect access information in the SPTE.
 	 */
 	if (fault->write && !(walker.pte_access & ACC_WRITE_MASK) &&
 	    !is_cr0_wp(vcpu->arch.mmu) && !fault->user && fault->slot) {
@@ -823,6 +825,7 @@ static int FNAME(page_fault)(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault
 		if (is_cr4_smep(vcpu->arch.mmu))
 			walker.pte_access &= ~ACC_EXEC_MASK;
 	}
+#endif
 
 	r = RET_PF_RETRY;
 	write_lock(&vcpu->kvm->mmu_lock);

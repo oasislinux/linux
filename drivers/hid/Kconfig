@@ -92,6 +92,17 @@ config HID_GENERIC
 
 	If unsure, say Y.
 
+config HID_HAPTIC
+	bool "Haptic touchpad support"
+	default n
+	help
+	Support for touchpads with force sensors and haptic actuators instead of a
+	traditional button.
+	Adds extra parsing and FF device for the hid multitouch driver.
+	It can be used for Elan 2703 haptic touchpad.
+
+	If unsure, say N.
+
 menu "Special HID drivers"
 
 config HID_A4TECH
@@ -147,6 +158,33 @@ config HID_APPLEIR
 	  prior to the 2010 model.
 
 	Say Y here if you want support for Apple infrared remote control.
+
+config HID_APPLETB_BL
+	tristate "Apple Touch Bar Backlight"
+	depends on BACKLIGHT_CLASS_DEVICE
+	depends on X86 || COMPILE_TEST
+	help
+	  Say Y here if you want support for the backlight of Touch Bars on x86
+	  MacBook Pros.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-appletb-bl.
+
+config HID_APPLETB_KBD
+	tristate "Apple Touch Bar Keyboard Mode"
+	depends on USB_HID
+	depends on BACKLIGHT_CLASS_DEVICE
+	depends on INPUT
+	depends on X86 || COMPILE_TEST
+	select INPUT_SPARSEKMAP
+	select HID_APPLETB_BL
+	help
+	  Say Y here if you want support for the keyboard mode (escape,
+	  function, media and brightness keys) of Touch Bars on x86 MacBook
+	  Pros.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-appletb-kbd.
 
 config HID_ASUS
 	tristate "Asus"
@@ -345,6 +383,7 @@ config HID_EVISION
 	help
 	Support for some EVision keyboards. Note that this is needed only when
 	applying customization using userspace programs.
+	Support for some EVision devices requiring report descriptor fixups.
 
 config HID_EZKEY
 	tristate "Ezkey BTC 8193 keyboard"
@@ -570,8 +609,6 @@ config HID_LED
 
 config HID_LENOVO
 	tristate "Lenovo / Thinkpad devices"
-	depends on ACPI
-	select ACPI_PLATFORM_PROFILE
 	select NEW_LEDS
 	select LEDS_CLASS
 	help
@@ -603,6 +640,7 @@ config HID_LOGITECH
 	tristate "Logitech devices"
 	depends on USB_HID
 	depends on LEDS_CLASS
+	depends on LEDS_CLASS_MULTICOLOR
 	default !EXPERT
 	help
 	Support for Logitech devices that are not fully compliant with HID standard.
@@ -743,6 +781,7 @@ config HID_MULTITOUCH
 	  Say Y here if you have one of the following devices:
 	  - 3M PCT touch screens
 	  - ActionStar dual touch panels
+	  - Apple Touch Bar on x86 MacBook Pros
 	  - Atmel panels
 	  - Cando dual touch panels
 	  - Chunghwa panels
@@ -1133,7 +1172,7 @@ config GREENASIA_FF
 
 config HID_HYPERV_MOUSE
 	tristate "Microsoft Hyper-V mouse driver"
-	depends on HYPERV
+	depends on HYPERV_VMBUS
 	help
 	Select this option to enable the Hyper-V mouse driver.
 
@@ -1214,11 +1253,25 @@ config HID_U2FZERO
 
 	  U2F Zero supports custom commands for blinking the LED
 	  and getting data from the internal hardware RNG.
-	  The internal hardware can be used to feed the enthropy pool.
+	  The internal hardware can be used to feed the entropy pool.
 
 	  U2F Zero only supports blinking its LED, so this driver doesn't
 	  allow setting the brightness to anything but 1, which will
 	  trigger a single blink and immediately reset back to 0.
+
+config HID_UNIVERSAL_PIDFF
+	tristate "universal-pidff: extended USB PID driver compatibility and usage"
+	depends on USB_HID
+	depends on HID_PID
+	help
+	  Extended PID support for selected devices.
+
+	  Contains report fixups, extended usable button range and
+	  pidff quirk management to extend compatibility with slightly
+	  non-compliant USB PID devices and better fuzz/flat values for
+	  high precision direct drive devices.
+
+	  Supports Moza Racing, Cammus, VRS, FFBeast and more.
 
 config HID_WACOM
 	tristate "Wacom Intuos/Graphire tablet support (USB)"
@@ -1266,6 +1319,8 @@ config HID_WINWING
 	help
 	  Support for WinWing Orion2 throttle base with the following grips:
 
+	    * TGRIP-15E
+	    * TGRIP-15EX
 	    * TGRIP-16EX
 	    * TGRIP-18
 

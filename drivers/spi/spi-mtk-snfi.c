@@ -1139,7 +1139,6 @@ static int mtk_snand_write_page_cache(struct mtk_snand *snf,
 	// Prepare for custom write interrupt
 	nfi_write32(snf, NFI_INTR_EN, NFI_IRQ_INTR_EN | NFI_IRQ_CUS_PG);
 	reinit_completion(&snf->op_done);
-	;
 
 	// Trigger NFI into custom mode
 	nfi_write16(snf, NFI_CMD, NFI_CMD_DUMMY_WRITE);
@@ -1284,9 +1283,6 @@ static int mtk_snand_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
 	struct mtk_snand *ms = spi_controller_get_devdata(mem->spi->controller);
 
-	dev_dbg(ms->dev, "OP %02x ADDR %08llX@%d:%u DATA %d:%u", op->cmd.opcode,
-		op->addr.val, op->addr.buswidth, op->addr.nbytes,
-		op->data.buswidth, op->data.nbytes);
 	if (mtk_snand_is_page_ops(op)) {
 		if (op->data.dir == SPI_MEM_DATA_IN)
 			return mtk_snand_read_page_cache(ms, op);

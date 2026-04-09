@@ -851,7 +851,7 @@ static void asd_free_queues(struct asd_ha_struct *asd_ha)
 		 * times out.  Apparently we don't wait for the CONTROL PHY
 		 * to complete, so it doesn't matter if we kill the timer.
 		 */
-		del_timer_sync(&ascb->timer);
+		timer_delete_sync(&ascb->timer);
 		WARN_ON(ascb->scb->header.opcode != CONTROL_PHY);
 
 		list_del_init(pos);
@@ -881,6 +881,9 @@ static void asd_pci_remove(struct pci_dev *dev)
 	asd_unregister_sas_ha(asd_ha);
 
 	asd_disable_ints(asd_ha);
+
+	/* Ensure all scheduled tasklets complete before freeing resources */
+	tasklet_kill(&asd_ha->seq.dl_tasklet);
 
 	asd_remove_dev_attrs(asd_ha);
 

@@ -205,9 +205,8 @@ static int timerfd_setup(struct timerfd_ctx *ctx, int flags,
 			   ALARM_REALTIME : ALARM_BOOTTIME,
 			   timerfd_alarmproc);
 	} else {
-		hrtimer_init(&ctx->t.tmr, clockid, htmode);
+		hrtimer_setup(&ctx->t.tmr, timerfd_tmrproc, clockid, htmode);
 		hrtimer_set_expires(&ctx->t.tmr, texp);
-		ctx->t.tmr.function = timerfd_tmrproc;
 	}
 
 	if (texp != 0) {
@@ -394,9 +393,8 @@ static const struct file_operations timerfd_fops = {
 
 SYSCALL_DEFINE2(timerfd_create, int, clockid, int, flags)
 {
-	int ufd;
-	struct timerfd_ctx *ctx;
-	struct file *file;
+	struct timerfd_ctx *ctx __free(kfree) = NULL;
+	int ret;
 
 	/* Check the TFD_* constants for consistency.  */
 	BUILD_BUG_ON(TFD_CLOEXEC != O_CLOEXEC);
@@ -429,27 +427,17 @@ SYSCALL_DEFINE2(timerfd_create, int, clockid, int, flags)
 			   ALARM_REALTIME : ALARM_BOOTTIME,
 			   timerfd_alarmproc);
 	else
-		hrtimer_init(&ctx->t.tmr, clockid, HRTIMER_MODE_ABS);
+		hrtimer_setup(&ctx->t.tmr, timerfd_tmrproc, clockid, HRTIMER_MODE_ABS);
 
 	ctx->moffs = ktime_mono_to_real(0);
 
-	ufd = get_unused_fd_flags(flags & TFD_SHARED_FCNTL_FLAGS);
-	if (ufd < 0) {
-		kfree(ctx);
-		return ufd;
-	}
-
-	file = anon_inode_getfile("[timerfd]", &timerfd_fops, ctx,
-				    O_RDWR | (flags & TFD_SHARED_FCNTL_FLAGS));
-	if (IS_ERR(file)) {
-		put_unused_fd(ufd);
-		kfree(ctx);
-		return PTR_ERR(file);
-	}
-
-	file->f_mode |= FMODE_NOWAIT;
-	fd_install(ufd, file);
-	return ufd;
+	ret = FD_ADD(flags & TFD_SHARED_FCNTL_FLAGS,
+		     anon_inode_getfile_fmode("[timerfd]", &timerfd_fops, ctx,
+					      O_RDWR | (flags & TFD_SHARED_FCNTL_FLAGS),
+					      FMODE_NOWAIT));
+	if (ret >= 0)
+		retain_and_null_ptr(ctx);
+	return ret;
 }
 
 static int do_timerfd_settime(int ufd, int flags, 

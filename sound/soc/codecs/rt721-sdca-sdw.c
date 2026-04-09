@@ -63,15 +63,14 @@ static bool rt721_sdca_volatile_register(struct device *dev, unsigned int reg)
 static bool rt721_sdca_mbq_readable_register(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
-	case 0x0900007:
+	case 0x0900004 ... 0x0900009:
 	case 0x0a00005:
 	case 0x0c00005:
 	case 0x0d00014:
 	case 0x0310100:
-	case 0x2000001:
-	case 0x2000002:
-	case 0x2000003:
+	case 0x2000000 ... 0x2000003:
 	case 0x2000013:
+	case 0x200002c:
 	case 0x200003c:
 	case 0x2000046:
 	case 0x5810000:
@@ -134,6 +133,8 @@ static bool rt721_sdca_mbq_volatile_register(struct device *dev, unsigned int re
 {
 	switch (reg) {
 	case 0x0310100:
+	case 0x0900005:
+	case 0x0900009:
 	case 0x0a00005:
 	case 0x0c00005:
 	case 0x0d00014:
@@ -141,6 +142,7 @@ static bool rt721_sdca_mbq_volatile_register(struct device *dev, unsigned int re
 	case 0x200000d:
 	case 0x2000019:
 	case 0x2000020:
+	case 0x200002c:
 	case 0x2000030:
 	case 0x2000046:
 	case 0x2000067:
@@ -437,7 +439,7 @@ static const struct sdw_device_id rt721_sdca_id[] = {
 };
 MODULE_DEVICE_TABLE(sdw, rt721_sdca_id);
 
-static int __maybe_unused rt721_sdca_dev_suspend(struct device *dev)
+static int rt721_sdca_dev_suspend(struct device *dev)
 {
 	struct rt721_sdca_priv *rt721 = dev_get_drvdata(dev);
 
@@ -453,7 +455,7 @@ static int __maybe_unused rt721_sdca_dev_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused rt721_sdca_dev_system_suspend(struct device *dev)
+static int rt721_sdca_dev_system_suspend(struct device *dev)
 {
 	struct rt721_sdca_priv *rt721_sdca = dev_get_drvdata(dev);
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
@@ -485,7 +487,7 @@ static int __maybe_unused rt721_sdca_dev_system_suspend(struct device *dev)
 
 #define RT721_PROBE_TIMEOUT 5000
 
-static int __maybe_unused rt721_sdca_dev_resume(struct device *dev)
+static int rt721_sdca_dev_resume(struct device *dev)
 {
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
 	struct rt721_sdca_priv *rt721 = dev_get_drvdata(dev);
@@ -524,15 +526,15 @@ regmap_sync:
 }
 
 static const struct dev_pm_ops rt721_sdca_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(rt721_sdca_dev_system_suspend, rt721_sdca_dev_resume)
-	SET_RUNTIME_PM_OPS(rt721_sdca_dev_suspend, rt721_sdca_dev_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(rt721_sdca_dev_system_suspend, rt721_sdca_dev_resume)
+	RUNTIME_PM_OPS(rt721_sdca_dev_suspend, rt721_sdca_dev_resume, NULL)
 };
 
 static struct sdw_driver rt721_sdca_sdw_driver = {
 	.driver = {
 		.name = "rt721-sdca",
 		.owner = THIS_MODULE,
-		.pm = &rt721_sdca_pm,
+		.pm = pm_ptr(&rt721_sdca_pm),
 	},
 	.probe = rt721_sdca_sdw_probe,
 	.remove = rt721_sdca_sdw_remove,
