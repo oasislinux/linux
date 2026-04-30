@@ -9,6 +9,23 @@ function bit(n, i) {
 	return n % 2 ^ (i + 1) > 2 ^ i - 1
 }
 
+function divmod(d, q,	x, n, i, j) {
+	x = 0
+	n = d[0]
+	for (i = 1; i <= n && x < q; ++i)
+		x = x * 10 + d[i]
+	j = 0
+	for (;; ++i) {
+		d[++j] = int(x / q)
+		x %= q
+		if (i > n)
+			break
+		x = x * 10 + d[i]
+	}
+	d[0] = j
+	return x
+}
+
 #
 # Read OID lines and determine the lengths of the encoded data arrays.
 #
@@ -26,14 +43,19 @@ function bit(n, i) {
 	octets[num_oids, n] = components[1] * 40 + components[2]
 	for (i = 3; i <= num_components; ++i) {
 		c = components[i]
+		for (j = 1; j <= length(c); ++j)
+			digits[j] = substr(c, j, 1)
+		digits[0] = j - 1
 
 		# Base128 encode the number
-		n += 1 + (c == 0 ? 0 : int(log(c) / log(2) / 7))
-		octets[num_oids, n] = c % 128
-		for (j = n - 1; c > 128; --j) {
-			c = int(c / 128)
-			octets[num_oids, j] = c % 128 + 128
-		}
+		m = 0
+		while (digits[1] != 0)
+			c_base128[++m] = divmod(digits, 128)
+
+		n += m
+		octets[num_oids, n] = c_base128[1]
+		for (j = 1; j < m; ++j)
+			octets[num_oids, n - j] = c_base128[j + 1] + 128
 	}
 	total_length += n
 
